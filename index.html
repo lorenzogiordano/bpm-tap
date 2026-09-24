@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0e0f11">
+  <meta name="color-scheme" content="dark">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="BPM Tap">
+  <meta name="description" content="Misura i BPM di una canzone battendo sul retro dell'iPhone o sullo schermo.">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="styles.css">
+  <title>BPM Tap</title>
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <div class="seg" role="group" aria-label="Modalità di input">
+        <button type="button" class="seg-btn" data-mode="back" aria-pressed="true">Retro</button>
+        <button type="button" class="seg-btn" data-mode="screen" aria-pressed="false">Schermo</button>
+      </div>
+      <button type="button" id="sensorToggle" class="icon-btn" aria-label="Mostra il segnale del sensore" aria-expanded="false">
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M2 12h4l2-6 4 13 3-9 2 2h5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </header>
+
+    <section id="pad" class="pad" data-state="idle" aria-live="polite">
+      <div class="dial">
+        <svg class="timer" viewBox="0 0 200 200" aria-hidden="true">
+          <circle class="timer-track" cx="100" cy="100" r="96"/>
+          <circle id="timerArc" class="timer-arc" cx="100" cy="100" r="96" pathLength="1"/>
+        </svg>
+        <div id="pulse" class="pulse" aria-hidden="true"></div>
+        <div class="readout">
+          <div class="bpm" id="bpm"><span id="bpmInt">—</span><span id="bpmDec" class="bpm-dec"></span></div>
+          <div class="unit">BPM</div>
+          <div class="meta">
+            <span id="plusMinus" class="plusminus"></span>
+            <span id="tapCount" class="taps"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="quality" aria-hidden="true">
+        <div class="quality-track"><div id="qualityFill" class="quality-fill"></div></div>
+        <span id="qualityLabel" class="quality-label"></span>
+      </div>
+
+      <p id="status" class="status"></p>
+    </section>
+
+    <div class="actions">
+      <button type="button" id="halfBtn" class="btn" disabled>÷2</button>
+      <button type="button" id="doubleBtn" class="btn" disabled>×2</button>
+      <button type="button" id="resetBtn" class="btn btn-wide" disabled>Nuova misura</button>
+    </div>
+
+    <section id="sensorPanel" class="panel sensor" hidden>
+      <div class="panel-head">
+        <h2>Sensore</h2>
+        <span id="sensorRate" class="hint"></span>
+      </div>
+      <canvas id="scope" class="scope" height="96"></canvas>
+      <label class="slider">
+        <span>Sensibilità</span>
+        <input id="sensitivity" type="range" min="1" max="10" step="1" value="6">
+        <output id="sensitivityOut" for="sensitivity">6</output>
+      </label>
+      <p class="hint">Le linee arancioni sono i tap riconosciuti, la linea tratteggiata è la soglia. Se i tap non vengono presi, alza la sensibilità; se ne compaiono di falsi, abbassala.</p>
+      <button type="button" id="exportData" class="link-btn">Esporta dati del sensore (ultimi 20 s)</button>
+    </section>
+
+    <section class="panel history">
+      <div class="panel-head">
+        <h2>Misure salvate</h2>
+        <button type="button" id="clearHistory" class="link-btn" hidden>Cancella tutto</button>
+      </div>
+      <ul id="historyList" class="history-list"></ul>
+      <p id="historyEmpty" class="hint">Quando smetti di battere, la misura si salva qui da sola.</p>
+    </section>
+  </main>
+
+  <div id="startSheet" class="sheet" hidden>
+    <div class="sheet-card">
+      <h1 id="sheetTitle">Batti sul retro</h1>
+      <ol class="steps">
+        <li>Tieni l'iPhone in mano, schermo verso di te.</li>
+        <li>Batti con un dito sul retro, a tempo con la canzone.</li>
+        <li>Più tap fai, più il valore diventa preciso. Quando smetti, si salva.</li>
+      </ol>
+      <p class="hint">Se hai attivo <em>Tocco posteriore</em> (Impostazioni › Accessibilità › Tocco), disattivalo: i doppi tap aprirebbero la sua azione.</p>
+      <button type="button" id="enableSensor" class="btn btn-primary">Attiva il sensore</button>
+      <button type="button" id="useScreen" class="link-btn">Usa lo schermo</button>
+      <p id="sensorError" class="error" hidden></p>
+    </div>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
