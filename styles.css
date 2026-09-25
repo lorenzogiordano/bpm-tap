@@ -377,7 +377,8 @@ button { font: inherit; color: inherit; }
 }
 
 .history-bpm small {
-  margin-left: 6px;
+  display: block;
+  margin-top: 2px;
   font-family: var(--sans);
   font-size: 13px;
   font-weight: 400;
@@ -554,3 +555,37 @@ button { font: inherit; color: inherit; }
 .key-check .btn[aria-pressed="true"] { border-color: var(--ok); color: var(--ok); }
 
 .key-confidence { font-size: 13px; color: var(--muted); }
+
+/* ---------- Metronomo e cadenze ---------- */
+
+.metro-btn {
+  margin-top: 10px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.metro-btn[hidden] { display: none; }
+.metro-btn[aria-pressed="true"],
+.chip[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+
+.history-key {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chip-small {
+  min-width: 30px;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.seg-btn[hidden],
+.icon-btn[hidden] { display: none; }

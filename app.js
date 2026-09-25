@@ -1,6 +1,7 @@
 import { TempoEstimator, DEFAULTS, formatBpm, formatHalfWidth, quality } from './tempo.js';
 import { TapDetector, REJECT_REASONS } from './detector.js';
 import { Listener } from './listen.js';
+import { Metronome, playCadence, stopCadence, releaseAudioSession } from './sound.js';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -46,6 +47,7 @@ const els = {
   keyCheck: $('keyCheck'),
   keyCheckStatus: $('keyCheckStatus'),
   keyCheckButtons: [...document.querySelectorAll('[data-check]')],
+  metroBtn: $('metroBtn'),
 };
 
 // Dopo un tocco sullo schermo si ignorano i colpi letti dal sensore per un
@@ -86,8 +88,17 @@ const saveHistory = () => store.set(KEYS.history, history);
 
 // ---------- Stato ----------
 
+// Il sensore di movimento c'è su telefoni e tablet. Sui computer (Windows, Linux, Mac) i
+// browser non lo espongono, quindi lì la modalità Retro non si mostra.
+function hasMotionSensor() {
+  const ua = navigator.userAgent;
+  if (/iPhone|iPad|iPod|Android/i.test(ua) || navigator.userAgentData?.mobile) return true;
+  return /Macintosh/.test(ua) && navigator.maxTouchPoints > 1; // iPadOS si presenta come Mac
+}
+const MOTION = hasMotionSensor();
+
 const state = {
-  mode: store.get(KEYS.mode, 'back'), // back | screen | listen
+  mode: store.get(KEYS.mode, MOTION ? 'back' : 'screen'), // back | screen | listen
   phase: 'idle',                      // idle | tapping | listening | locked
   multiplier: 1,
   source: null,
@@ -101,6 +112,16 @@ const state = {
 };
 
 const estimator = new TempoEstimator();
+// Metronomo per sentire i BPM trovati (la misura appena fatta o una salvata).
+const metronome = new Metronome({ onBeat: () => flash(true) });
+let metronomeStoppedAt = -Infinity;
+
+function stopMetronome() {
+  if (!metronome.playing) return;
+  metronome.stop();
+  metronomeStoppedAt = performance.now();
+  renderMetronome();
+}
 const detector = new TapDetector({ sensitivity: store.get(KEYS.sensitivity, 5) });
 let endTimer = null;
 
@@ -115,6 +136,7 @@ function eventTime(event) {
 // ---------- Sessione di misura ----------
 
 function beginSession(source) {
+  stopMetronome();
   estimator.reset();
   Object.assign(state, {
     phase: 'tapping', multiplier: 1, source, lockedResult: null, savedId: null, outcome: null,
@@ -167,6 +189,7 @@ function finalize() {
 }
 
 function newMeasure() {
+  stopMetronome();
   if (state.phase === 'tapping') finalize();
   if (state.phase === 'listening') listener.stop();
   estimator.reset();
@@ -199,6 +222,8 @@ async function toggleListening() {
     return;
   }
   els.listenError.hidden = true;
+  stopMetronome();
+  releaseAudioSession(); // il microfono ha bisogno della sessione audio "registra e suona"
   Object.assign(state, {
     phase: 'listening', multiplier: 1, source: 'listen', listen: null, lockedResult: null, lockedKey: null, savedId: null, outcome: null,
   });
@@ -258,6 +283,7 @@ function finalizeListen() {
 // ×2 / ÷2: vale per la misura in corso e per quella appena salvata.
 function scale(factor) {
   state.multiplier *= factor;
+  if (metronome.owner === 'main') metronome.setBpm(metronome.bpm * factor);
   const entry = state.phase === 'locked' && history.find((e) => e.id === state.savedId);
   if (entry) {
     entry.bpm *= factor;
@@ -308,6 +334,7 @@ function render() {
     els.qualityLabel.textContent = state.phase === 'tapping' ? 'Continua a battere…' : listening ? 'In ascolto…' : '';
   }
   renderListen();
+  renderMetronome();
 
   els.status.textContent = statusText(result);
   els.halfBtn.disabled = els.doubleBtn.disabled = !result;
@@ -316,6 +343,29 @@ function render() {
     els.timerArc.style.removeProperty('stroke-dashoffset');
     els.timerArc.style.removeProperty('opacity');
   }
+}
+
+// Metronomo sulla misura appena fatta: si ascolta sopra la canzone per capire se il
+// valore è giusto o va dimezzato/raddoppiato.
+function renderMetronome() {
+  const result = state.phase === 'locked' ? state.lockedResult : null;
+  els.metroBtn.hidden = !result;
+  const on = metronome.owner === 'main';
+  els.metroBtn.textContent = on ? '■ Ferma il metronomo' : '▶ Senti i BPM';
+  els.metroBtn.setAttribute('aria-pressed', String(on));
+  for (const button of els.historyList.querySelectorAll('[data-action="metro"]')) {
+    const playing = metronome.owner === button.closest('.history-item').dataset.id;
+    button.textContent = playing ? '■' : '▶';
+    button.setAttribute('aria-pressed', String(playing));
+  }
+}
+
+function toggleMainMetronome() {
+  if (metronome.owner === 'main') { stopMetronome(); return; }
+  const result = state.lockedResult;
+  if (!result) return;
+  metronome.start(result.bpm * state.multiplier, 'main');
+  renderMetronome();
 }
 
 // Tonalità, livello del microfono e pulsante dell'ascolto.
@@ -351,8 +401,6 @@ function keyDetail(key) {
 
 // ---------- Verifica a orecchio della tonalità ----------
 
-let checkAudio = null;
-
 function renderKeyCheck() {
   const key = state.phase === 'locked' && state.source === 'listen' ? state.lockedKey : null;
   const show = Boolean(key && key.alternativeKey);
@@ -365,38 +413,13 @@ function renderKeyCheck() {
   });
 }
 
-// Accordo di "casa" morbido (tonica, terza, quinta, ottava) per 4 secondi.
-function playKey({ tonic, mode }) {
-  const Context = window.AudioContext || window.webkitAudioContext;
-  if (!checkAudio) checkAudio = new Context();
-  const ctx = checkAudio;
-  ctx.resume();
-  const now = ctx.currentTime;
-  const midi = [48 + tonic, 48 + tonic + (mode === 'major' ? 4 : 3), 48 + tonic + 7, 60 + tonic];
-  const master = ctx.createGain();
-  master.gain.setValueAtTime(0, now);
-  master.gain.linearRampToValueAtTime(0.18, now + 0.4);
-  master.gain.setValueAtTime(0.18, now + 3.2);
-  master.gain.linearRampToValueAtTime(0, now + 4);
-  master.connect(ctx.destination);
-  midi.forEach((m, i) => {
-    const osc = ctx.createOscillator();
-    osc.type = 'triangle';
-    osc.frequency.value = 440 * 2 ** ((m - 69) / 12);
-    const g = ctx.createGain();
-    g.gain.value = i === 0 ? 1 : 0.55;
-    osc.connect(g).connect(master);
-    osc.start(now);
-    osc.stop(now + 4.05);
-  });
-}
-
 function chooseKey(index) {
   const key = state.lockedKey;
   if (!key) return;
   const options = [{ tonic: key.tonic, mode: key.mode, name: key.name }, { ...key.alternativeKey, name: key.alternative }];
   const chosen = options[index];
-  playKey(chosen);
+  stopMetronome();
+  playCadence(chosen);
   const other = options[1 - index];
   state.lockedKey = { ...key, ...chosen, alternative: other.name, alternativeKey: { tonic: other.tonic, mode: other.mode }, confirmed: true };
   const entry = history.find((e) => e.id === state.savedId);
@@ -405,7 +428,7 @@ function chooseKey(index) {
     saveHistory();
     renderHistory();
   }
-  els.keyCheckStatus.textContent = `Suona ${chosen.name}. Se è quella giusta, tienila; altrimenti ascolta l'altra.`;
+  els.keyCheckStatus.textContent = `Cadenza di ${chosen.name}. Se torna "a casa" con la canzone, tienila; altrimenti ascolta l'altra.`;
   render();
 }
 
@@ -523,7 +546,8 @@ function onMotion(event) {
 
   let tap = null;
   if (hit && state.mode === 'back') {
-    const touched = t - state.lastTouch <= TOUCH_GUARD_MS;
+    // Toccare lo schermo o il metronomo (l'altoparlante fa vibrare il telefono) non sono tap.
+    const touched = t - state.lastTouch <= TOUCH_GUARD_MS || metronome.playing || performance.now() - metronomeStoppedAt < 300;
     const ok = hit.ok && !touched;
     if (ok) tap = hit.time;
     // L'esito arriva qualche campione dopo il picco: il segno va sul campione giusto.
@@ -625,11 +649,14 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && state.sensorOn && state.mode === 'back') requestWakeLock();
   // In secondo piano iOS spegne il microfono: si chiude l'ascolto e si salva quello che c'è.
   if (document.visibilityState === 'hidden' && state.phase === 'listening') listener.stop();
+  if (document.visibilityState === 'hidden') { stopMetronome(); stopCadence(); }
 });
 
 // ---------- Modalità ----------
 
-function setMode(mode) {
+function setMode(requested) {
+  const mode = requested === 'back' && !MOTION ? 'screen' : requested;
+  stopMetronome();
   if (state.phase === 'tapping') finalize();
   if (state.phase === 'listening') listener.stop();
   state.mode = mode;
@@ -661,6 +688,7 @@ function renderHistory() {
   els.historyList.replaceChildren(...history.map(historyItem));
   els.historyEmpty.hidden = history.length > 0;
   els.clearHistory.hidden = history.length === 0;
+  renderMetronome();
 }
 
 function historyItem(entry) {
@@ -678,6 +706,7 @@ function historyItem(entry) {
   const tools = document.createElement('div');
   tools.className = 'history-tools';
   tools.append(
+    chip('metro', '▶', 'Senti i BPM con il metronomo'),
     chip('half', '÷2', 'Dimezza'),
     chip('double', '×2', 'Raddoppia'),
     chip('delete', '✕', 'Elimina misura'),
@@ -701,8 +730,12 @@ function historyItem(entry) {
     const key = document.createElement('div');
     key.className = 'history-key';
     const unsure = entry.key.alternative && !(entry.key.probability >= 0.8);
-    key.textContent = entry.key.confirmed ? `${entry.key.name} ✓ (scelta a orecchio)`
+    const label = document.createElement('span');
+    label.textContent = entry.key.confirmed ? `${entry.key.name} ✓ (scelta a orecchio)`
       : unsure ? `${entry.key.name} (oppure ${entry.key.alternative})` : entry.key.name;
+    const play = chip('cadence', '▶', `Senti la cadenza di ${entry.key.name}`);
+    play.classList.add('chip-small');
+    key.append(play, label);
     li.append(key);
   }
   li.append(name, meta);
@@ -726,14 +759,27 @@ els.historyList.addEventListener('click', (event) => {
   const entry = history.find((e) => e.id === id);
   if (!entry) return;
   const { action } = button.dataset;
+  if (action === 'metro') {
+    if (metronome.owner === id) stopMetronome();
+    else { metronome.start(entry.bpm, id); renderMetronome(); }
+    return;
+  }
+  if (action === 'cadence') {
+    stopMetronome();
+    playCadence(entry.key);
+    return;
+  }
   if (action === 'delete') {
     history = history.filter((e) => e.id !== id);
     if (state.savedId === id) state.savedId = null;
+    if (metronome.owner === id) stopMetronome();
   } else {
     const factor = action === 'double' ? 2 : 0.5;
     entry.bpm *= factor;
     entry.halfWidth *= factor;
     if (state.phase === 'locked' && state.savedId === id) state.multiplier *= factor;
+    if (metronome.owner === id) metronome.setBpm(entry.bpm);
+    if (metronome.owner === 'main' && state.savedId === id) metronome.setBpm(metronome.bpm * factor);
   }
   saveHistory();
   renderHistory();
@@ -750,6 +796,7 @@ els.historyList.addEventListener('input', (event) => {
 
 els.clearHistory.addEventListener('click', () => {
   if (!confirm('Cancellare tutte le misure salvate?')) return;
+  if (metronome.owner && metronome.owner !== 'main') stopMetronome();
   history = [];
   state.savedId = null;
   saveHistory();
@@ -853,7 +900,7 @@ els.exportData.addEventListener('click', async () => {
 // ---------- Input ----------
 
 els.pad.addEventListener('pointerdown', (event) => {
-  if (state.mode !== 'screen') return;
+  if (state.mode !== 'screen' || event.target.closest('button')) return;
   event.preventDefault();
   onTap(eventTime(event), 'screen');
 });
@@ -883,11 +930,16 @@ els.useListen.addEventListener('click', () => setMode('listen'));
 els.listenBtn.addEventListener('click', toggleListening);
 els.skipCalibration.addEventListener('click', () => listener.skipCalibration());
 els.keyCheckButtons.forEach((button) => button.addEventListener('click', () => chooseKey(Number(button.dataset.check))));
+els.metroBtn.addEventListener('click', toggleMainMetronome);
 
 // ---------- Avvio ----------
 
 els.sensitivity.value = String(detector.cfg.sensitivity);
 els.sensitivityOut.textContent = String(detector.cfg.sensitivity);
+if (!MOTION) {
+  document.querySelector('[data-mode="back"]').hidden = true;
+  els.sensorToggle.hidden = true;
+}
 renderHistory();
 setMode(state.mode);
 
