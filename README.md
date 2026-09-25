@@ -143,6 +143,35 @@ Il punteggio MIREX dà mezzo punto alla quinta, 0,3 alla relativa e 0,2 alla par
 
 Quanto è affidabile la risposta (dal microfono, brani mai visti): con probabilità ≥ 0,8 è giusta nell'82–95% dei casi (13–16% dei brani); tra 0,5 e 0,8 circa 2 volte su 3; sotto 0,5 una volta su 3 o su 2. Da qui "sicura", "probabile" e "incerta".
 
+**Accordi** ([audio/chords.js](audio/chords.js))
+
+Lo schema è quello di Chordino (Mauch & Dixon 2010), riscritto dal metodo pubblicato, con in più la tonalità:
+
+1. Cromagramma NNLS di basso e acuti (lo stesso della tonalità, con un frame ogni 93 ms), mediato tra un battito e l'altro, compresso con la radice quadrata. Al battito si aggiunge il contesto: la media degli acuti del battito prima e di quello dopo.
+2. Un modello lineare dà un punteggio ai 24 accordi maggiori e minori, con gli stessi pesi per tutte le 12 fondamentali, e a "nessun accordo" (energia e piattezza del cromagramma).
+3. La tonalità stimata da S-KEY aggiunge una preferenza imparata dai dati: quanto è frequente ogni accordo in ogni grado della scala maggiore o minore.
+4. Un modello di Markov nascosto (HMM), con le transizioni contate sui dati e invarianti per trasposizione, dà a ogni battito la probabilità di ogni accordo (avanti-indietro).
+5. La quota di tempo di ogni accordo su tutto l'ascoltato decide cosa mostrare: dopo 20 s, gli accordi con almeno il 10%.
+
+Allenamento su due raccolte con audio e accordi annotati, entrambe CC BY 4.0: canzoni pop è impossibile trovarne libere.
+- [AAM](https://zenodo.org/records/5794629): 397 canzoni sintetiche di 2 minuti, multi-strumento, con accordi esatti.
+- [GuitarSet](https://zenodo.org/records/3371780): 180 accompagnamenti di chitarra, registrati con un microfono, in 5 stili.
+
+Prova onesta in 5 gruppi. Ogni gruppo lascia fuori canzoni AAM e interi giri di accordi GuitarSet: ogni giro è suonato da 6 chitarristi, quindi lasciare fuori solo un chitarrista avrebbe fatto "ricordare" il giro al modello. La tonalità usata è quella stimata dall'app.
+
+| | Accordo per battito | Accordi mostrati giusti | Accordi principali (≥10%) trovati |
+|---|---|---|---|
+| GuitarSet (chitarra vera, 30 s), pulito | 67% | 86% | 68% |
+| GuitarSet, dal microfono | 64% | 86% | 68% |
+| AAM (canzoni intere), pulito | 91% | 99% | 91% |
+| AAM, dal microfono | 80% | 97% | 82% |
+
+Per confronto, Chordino fa il 67–78% per battito sui dati di prova di MIREX, con audio pulito. Anche due annotatori umani concordano solo sul 73% dei battiti ([Koops et al. 2019](https://github.com/chordify/CASD)). Sulle soglie di tempo ci sono risultati coerenti: calcolati sulle uscite ufficiali MIREX, gli accordi che occupano il 10–20% o più del brano sono davvero nella canzone nel 90–97% dei casi.
+
+La tonalità conta. Con la tonalità stimata, i brani con tutti gli accordi mostrati giusti passano dal 63–65% all'80% (GuitarSet). La precisione per battito invece non cambia.
+
+Limiti. Solo accordi maggiori e minori: le settime restano sulla triade, i diminuiti non si riconoscono. Mancano prove su canzoni pop vere registrate con un telefono, perché non esistono dati liberi di questo tipo.
+
 **Cosa non ha aiutato** (misurato, poi tolto):
 
 - **Pulire il rumore** col profilo del silenzio iniziale (sottrazione spettrale), o senza silenzio (statistiche dei minimi, Martin 2001), anche spegnendo del tutto le righe del ronzio elettrico: da 0,5 a 2,5 punti in meno sulla tonalità, niente sul tempo, con ogni tipo di rumore. S-KEY regge già il rumore costante e il filtro aggiunge artefatti. Il silenzio iniziale serve quindi a capire quando parte la canzone e a stimare quanto la musica supera il rumore (sotto 10 dB compare l'avviso di avvicinarsi).
@@ -183,7 +212,7 @@ La perdita dal microfono viene soprattutto dall'eco della stanza e dalle casse p
 npm test
 ```
 
-Ci sono 43 test (Node, nessuna dipendenza):
+Ci sono 53 test (Node, nessuna dipendenza):
 
 - precisione che cresce come n^-1,5;
 - regressione più precisa della media degli intervalli;
@@ -195,6 +224,8 @@ Ci sono 43 test (Node, nessuna dipendenza):
   - scossoni in ogni direzione, urti, colpi sul fianco, tocchi leggeri;
   - movimento lento della mano, caso peggiore, sensibilità;
 - sessione completa a 60 BPM con tocchi leggeri e uno scossone in mezzo;
+- colpi sul MacBook: colpi a 110 BPM tutti contati con istanti regolari, colpi fortissimi senza doppi, battitura e spostamenti ignorati, sensibilità;
+- accordi: media per battito, preferenza di tonalità, HMM, quote, e catena completa su un giro Do–Sol–Lam–Fa sintetico;
 - ascolto: FFT, framing e ricampionamento; BPM dai battiti con salti di fase e copertura del margine; interprete ONNX contro il calcolo diretto; indizi della tonalità che si spostano con la trasposizione; media dei profili di S-KEY su finestre sovrapposte; catena completa (S-KEY + modello) su cadenze in Do maggiore, La minore e Mi♭ maggiore.
 
 Il banco di prova con i dataset, le stanze simulate e gli script che hanno prodotto i numeri qui sopra è in [lab/](lab/README.md).
@@ -206,9 +237,11 @@ Il banco di prova con i dataset, le stanze simulate e gli script che hanno prodo
 | [index.html](index.html), [styles.css](styles.css) | interfaccia |
 | [app.js](app.js) | sessioni, sensore, ascolto, storico, pannello del sensore |
 | [tempo.js](tempo.js) | stima dei BPM dai tap (pura, testabile) |
-| [detector.js](detector.js) | rilevamento dei tap dall'accelerometro (puro, testabile) |
+| [detector.js](detector.js) | rilevamento dei tap dall'accelerometro del telefono (puro, testabile) |
+| [knock.js](knock.js), [mac-motion.js](mac-motion.js), [mac/bpm-knock.py](mac/bpm-knock.py) | colpi sul MacBook: rilevatore, collegamento, programma del sensore |
+| [sound.js](sound.js) | metronomo, cadenze e accordi da ascoltare |
 | [listen.js](listen.js) | microfono, AudioWorklet e Worker dell'ascolto |
-| [audio/](audio/) | analisi dell'audio: tempo, S-KEY, interprete ONNX, modello della tonalità |
+| [audio/](audio/) | analisi dell'audio: tempo, S-KEY, interprete ONNX, tonalità e accordi |
 | [sw.js](sw.js), [manifest.webmanifest](manifest.webmanifest), [icons/](icons/) | PWA |
 | [test/](test/) | test |
 | [lab/](lab/README.md) | banco di prova (non serve all'app) |

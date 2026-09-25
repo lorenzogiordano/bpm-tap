@@ -12,6 +12,8 @@ L'audio e le annotazioni non sono nel repository. Vanno in `lab/work/data/<racco
 | GiantSteps Key | 604 | tonalità | [giantsteps-key-dataset](https://github.com/GiantSteps/giantsteps-key-dataset), audio dal backup JKU |
 | GiantSteps Tempo | 664 | tempo | [giantsteps-tempo-dataset](https://github.com/GiantSteps/giantsteps-tempo-dataset), annotazioni v2 (Schreiber & Müller 2018) |
 | GiantSteps MTG Key | 1349 | tonalità (allenamento) | [giantsteps-mtg-key-dataset](https://github.com/GiantSteps/giantsteps-mtg-key-dataset) |
+| AAM | 397 (dei 3000) | accordi | [zenodo 5794629](https://zenodo.org/records/5794629), canzoni sintetiche con accordi esatti; i mix sono estratti dallo zip remoto con richieste parziali |
+| GuitarSet | 180 accompagnamenti | accordi | [zenodo 3371780](https://zenodo.org/records/3371780), audio del microfono, accordi del leadsheet ridotti a maggiore/minore |
 | FMAK | 5488 | tonalità (allenamento) | annotazioni FMAK v2 (Kong et al., STONE, ISMIR 2024), audio da `fma_large` del [Free Music Archive](https://github.com/mdeff/fma) |
 
 Tutti i brani durano 30 s: GTZAN e FMA sono già clip da 30 s; delle anteprime GiantSteps (2 minuti) si è tenuto, per lo spazio su disco, l'estratto centrale di 30 s (20 s per GiantSteps Tempo). I risultati pubblicati sulle anteprime intere non sono quindi direttamente confrontabili.
@@ -37,6 +39,9 @@ Ogni brano ha il suo scenario, estratto da un seme ricavato dal nome del brano. 
 | `key-final-eval.mjs <esclusa> <pulito\|stanza>` | allena senza una raccolta e la usa come prova, in tutte le condizioni |
 | `key-export.mjs deep6,deep5,deep4 nnls-mic` | allena il modello finale ed esporta `audio/key-model.json`; con `--exclude` e `--out` esporta un modello senza una raccolta |
 | `key-app-eval.mjs <raccolta> <modello>` | prova un modello esportato con il codice dell'app: per condizione e tipo di rumore, prime due, MIREX, affidabilità |
+| `chords-extract.mjs <raccolta> <clean\|mic>` | battiti trovati dall'app, cromagramma per battito e accordo annotato |
+| `chords-keys.mjs <raccolta> <clean\|mic>` | tonalità stimata dall'app per gli stessi brani |
+| `chords-learn.mjs <prova>` | modello degli accordi: `mixed-cv` (prova finale), `gs-cv`, `aam-cv`, `aam2gs`, `gs2aam`, `final --write` (con `KEY_SOURCE=est KEY_WEIGHT=0.5 TEMPERATURE=0.5`) |
 | `listen-sim.mjs` / `listen-proxy.mjs` | la tonalità come la vede l'app durante l'ascolto (dopo 6, 14, 22, 30 s) e come unire i passaggi di S-KEY |
 
 Gli altri script (`key-learn`, `key-big`, `sweep`, `key-baseline`, `diagnose`, `by-genre`, `error-structure`, `noise-types`…) sono le prove intermedie citate nel README principale.
