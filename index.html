@@ -78,6 +78,8 @@
         <div class="level" aria-hidden="true"><div id="levelFill" class="level-fill"></div></div>
         <button type="button" id="listenBtn" class="btn btn-primary">Inizia ad ascoltare</button>
         <button type="button" id="skipCalibration" class="link-btn" hidden>La canzone è già partita</button>
+        <button type="button" id="fileBtn" class="link-btn">oppure analizza un file audio</button>
+        <input type="file" id="fileInput" hidden>
         <p id="listenError" class="error" hidden></p>
       </div>
 
@@ -125,6 +127,10 @@
     </section>
     </aside>
   </main>
+
+  <div id="dropOverlay" class="drop-overlay" hidden>
+    <p>Rilascia il file per analizzarlo<br><small>BPM, tonalità e accordi del brano intero. Il file resta sul dispositivo.</small></p>
+  </div>
 
   <div id="startSheet" class="sheet" hidden>
     <div class="sheet-card">

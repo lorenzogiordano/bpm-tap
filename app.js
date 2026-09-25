@@ -2,6 +2,7 @@ import { TempoEstimator, DEFAULTS, formatBpm, formatHalfWidth, quality } from '.
 import { TapDetector, REJECT_REASONS } from './detector.js';
 import { KnockDetector, KNOCK_REJECT_REASONS } from './knock.js';
 import { MacMotion, servedByHelper } from './mac-motion.js';
+import { analyzeFile, FILE_ACCEPT } from './file-analysis.js';
 import { Listener } from './listen.js';
 import { Metronome, playCadence, playChord, stopCadence, releaseAudioSession } from './sound.js';
 
@@ -51,6 +52,9 @@ const els = {
   keyCheckButtons: [...document.querySelectorAll('[data-check]')],
   metroBtn: $('metroBtn'),
   chordLine: $('chordLine'),
+  fileBtn: $('fileBtn'),
+  fileInput: $('fileInput'),
+  dropOverlay: $('dropOverlay'),
   chordChips: $('chordChips'),
 };
 
@@ -200,6 +204,7 @@ function finalize() {
 
 function newMeasure() {
   stopMetronome();
+  if (state.phase === 'analyzing') cancelFileAnalysis();
   if (state.phase === 'tapping') finalize();
   if (state.phase === 'listening') listener.stop();
   estimator.reset();
@@ -227,6 +232,10 @@ function listenResult() {
 }
 
 async function toggleListening() {
+  if (state.phase === 'analyzing') {
+    cancelFileAnalysis();
+    return;
+  }
   if (state.phase === 'listening') {
     listener.stop();
     return;
@@ -263,23 +272,28 @@ function showListenError(error) {
 // Fine dell'ascolto: BPM e tonalità restano a schermo e, se affidabili, si salvano.
 function finalizeListen() {
   if (state.phase !== 'listening') return;
-  const result = listenResult();
-  const key = state.listen?.key || null;
-  state.phase = 'locked';
-  state.lockedResult = result;
-  state.lockedKey = key;
-  state.lockedChords = shownChords(state.listen?.chords);
+  const ready = !state.listen?.phase || state.listen.phase === 'listening';
+  saveAnalysis(ready ? state.listen : null, 'listen');
+}
+
+// Fine di un'analisi (ascolto o file): BPM, tonalità e accordi restano a schermo e, se
+// affidabili, si salvano.
+function saveAnalysis(update, source, name = '') {
+  const t = update?.tempo;
+  const result = t ? { bpm: t.bpm, halfWidth: t.halfWidth, taps: t.beats, valid: source === 'file' || t.stable } : null;
+  const key = update?.key || null;
+  Object.assign(state, { phase: 'locked', source, lockedResult: result, lockedKey: key, lockedChords: shownChords(update?.chords) });
   if (result && result.taps >= 8) {
     const entry = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       bpm: result.bpm * state.multiplier,
       halfWidth: result.halfWidth * state.multiplier,
       taps: result.taps,
-      source: 'listen',
+      source,
       key: key && { tonic: key.tonic, mode: key.mode, name: key.name, alternative: key.alternative || null, probability: key.probability ?? null },
       chords: state.lockedChords.length ? state.lockedChords : undefined,
       createdAt: Date.now(),
-      name: '',
+      name,
     };
     history.unshift(entry);
     saveHistory();
@@ -290,6 +304,62 @@ function finalizeListen() {
   }
   render();
   renderHistory();
+}
+
+// ---------- File audio ----------
+
+let fileJob = null;
+const FILE_STAGES = { decode: 'lettura del file', load: 'preparazione', rhythm: 'tempo e battiti', key: 'tonalità', chords: 'accordi', done: 'fatto' };
+
+function startFileAnalysis(file) {
+  if (!file) return;
+  stopMetronome();
+  if (state.phase === 'tapping') finalize();
+  if (state.phase === 'listening') listener.stop();
+  if (state.mode !== 'listen') setMode('listen');
+  fileJob?.cancel();
+  const name = file.name.replace(/\.[^.]+$/, '');
+  els.listenError.hidden = true;
+  Object.assign(state, {
+    phase: 'analyzing', multiplier: 1, source: 'file', listen: null, lockedResult: null, lockedKey: null, lockedChords: null,
+    savedId: null, outcome: null, fileName: name, fileProgress: 0, fileStage: 'decode',
+  });
+  render();
+  let job = null;
+  job = analyzeFile(file, {
+    onProgress(fraction, stage) {
+      if (job && fileJob !== job) return; // la prima chiamata arriva prima dell'assegnazione
+      state.fileProgress = fraction;
+      state.fileStage = stage;
+      render();
+    },
+  });
+  fileJob = job;
+  job.promise.then((result) => {
+    if (fileJob !== job) return;
+    fileJob = null;
+    state.listen = { phase: 'listening', ...result };
+    saveAnalysis(state.listen, 'file', name);
+  }).catch((error) => {
+    if (fileJob !== job) return;
+    fileJob = null;
+    state.phase = 'idle';
+    const messages = {
+      decode: 'Non riesco a leggere questo file: il browser non ne supporta il formato. Prova con MP3, M4A (AAC) o WAV.',
+      'too-long': 'Il file è troppo lungo: al massimo 15 minuti.',
+      unsupported: 'Questo browser non sa decodificare file audio.',
+    };
+    els.listenError.textContent = messages[error.message] || `Analisi non riuscita (${error.message}).`;
+    els.listenError.hidden = false;
+    render();
+  });
+}
+
+function cancelFileAnalysis() {
+  fileJob?.cancel();
+  fileJob = null;
+  if (state.phase === 'analyzing') state.phase = 'idle';
+  render();
 }
 
 // ×2 / ÷2: vale per la misura in corso e per quella appena salvata.
@@ -320,11 +390,12 @@ function render() {
   const m = state.multiplier;
 
   const listening = state.phase === 'listening';
-  let visual = listening ? 'tapping' : state.phase;
+  const analyzing = state.phase === 'analyzing';
+  let visual = listening ? 'tapping' : analyzing ? 'rough' : state.phase;
   if ((state.phase === 'tapping' || listening) && (!result || !result.valid)) visual = 'rough';
   els.pad.dataset.state = visual;
-  els.pad.dataset.listening = String(listening);
-  const unit = (state.phase === 'locked' ? state.source : state.mode) === 'listen' ? 'battiti' : 'tap';
+  els.pad.dataset.listening = String(listening || analyzing);
+  const unit = ['listen', 'file'].includes(state.phase === 'locked' ? state.source : state.mode) || state.mode === 'listen' ? 'battiti' : 'tap';
 
   if (result) {
     const bpm = result.bpm * m;
@@ -343,7 +414,7 @@ function render() {
     els.plusMinus.textContent = '';
     els.tapCount.textContent = state.phase === 'tapping' ? '1 tap' : '';
     els.qualityFill.style.transform = 'scaleX(0)';
-    els.qualityLabel.textContent = state.phase === 'tapping' ? 'Continua a battere…' : listening ? 'In ascolto…' : '';
+    els.qualityLabel.textContent = state.phase === 'tapping' ? 'Continua a battere…' : listening ? 'In ascolto…' : analyzing ? 'Analisi del file…' : '';
   }
   renderListen();
   renderChords();
@@ -352,7 +423,11 @@ function render() {
   els.status.textContent = statusText(result);
   els.halfBtn.disabled = els.doubleBtn.disabled = !result;
   els.resetBtn.disabled = state.phase === 'idle';
-  if (state.phase !== 'tapping') {
+  if (analyzing) {
+    // L'anello mostra l'avanzamento dell'analisi del file.
+    els.timerArc.style.strokeDashoffset = String(1 - (state.fileProgress || 0));
+    els.timerArc.style.opacity = '1';
+  } else if (state.phase !== 'tapping') {
     els.timerArc.style.removeProperty('stroke-dashoffset');
     els.timerArc.style.removeProperty('opacity');
   }
@@ -395,7 +470,8 @@ function renderListen() {
   els.skipCalibration.hidden = !(state.phase === 'listening' && (!state.listen || phase === 'calibrating' || phase === 'waiting'));
   renderKeyCheck();
   if (!inListen) return;
-  els.listenBtn.textContent = state.phase === 'listening' ? 'Ferma e salva' : 'Inizia ad ascoltare';
+  els.listenBtn.textContent = state.phase === 'listening' ? 'Ferma e salva' : state.phase === 'analyzing' ? 'Annulla l\'analisi' : 'Inizia ad ascoltare';
+  els.fileBtn.hidden = state.phase === 'listening' || state.phase === 'analyzing';
   const level = state.phase === 'listening' && state.listen ? state.listen.level : -100;
   const fill = Math.min(1, Math.max(0, (level + 60) / 50)); // −60 dB → vuoto, −10 dB → pieno
   els.levelFill.style.transform = `scaleX(${fill})`;
@@ -460,7 +536,7 @@ function keyDetail(key) {
 // ---------- Verifica a orecchio della tonalità ----------
 
 function renderKeyCheck() {
-  const key = state.phase === 'locked' && state.source === 'listen' ? state.lockedKey : null;
+  const key = state.phase === 'locked' && ['listen', 'file'].includes(state.source) ? state.lockedKey : null;
   const show = Boolean(key && key.alternativeKey);
   els.keyCheck.hidden = !show;
   if (!show) return;
@@ -491,6 +567,15 @@ function chooseKey(index) {
 }
 
 function statusText(result) {
+  if (state.phase === 'analyzing') {
+    const pct = Math.round(100 * (state.fileProgress || 0));
+    return `Analizzo «${state.fileName}»: ${FILE_STAGES[state.fileStage] || ''}… ${pct}%`;
+  }
+  if (state.phase === 'locked' && state.source === 'file') {
+    return state.outcome === 'saved'
+      ? `«${state.fileName}» analizzato e salvato.`
+      : 'Non ho trovato abbastanza ritmo in questo file per salvare la misura.';
+  }
   if (state.phase === 'listening') {
     const phase = state.listen?.phase;
     if (!state.listen || phase === 'calibrating') {
@@ -514,7 +599,7 @@ function statusText(result) {
   }
   if (state.mode === 'listen') {
     return DESKTOP
-      ? 'Fai suonare la canzone, anche da questo computer, e premi «Inizia ad ascoltare» (o Spazio).'
+      ? 'Fai suonare la canzone, anche da questo computer, e premi «Inizia ad ascoltare» (o Spazio). Oppure trascina qui un file audio.'
       : 'Fai suonare la canzone da un altro dispositivo (cassa, computer), tieni il telefono vicino alla cassa e tocca «Inizia ad ascoltare».';
   }
   if (state.phase === 'locked') {
@@ -828,7 +913,7 @@ function historyItem(entry) {
   value.className = 'history-bpm';
   const { int, dec } = formatBpm(entry.bpm, entry.halfWidth);
   const detail = document.createElement('small');
-  detail.textContent = `${formatHalfWidth(entry.halfWidth)} · ${entry.taps} ${entry.source === 'listen' ? 'battiti' : 'tap'}`;
+  detail.textContent = `${formatHalfWidth(entry.halfWidth)} · ${entry.taps} ${['listen', 'file'].includes(entry.source) ? 'battiti' : 'tap'}`;
   value.append(`${int}${dec}`, detail);
 
   const tools = document.createElement('div');
@@ -850,7 +935,7 @@ function historyItem(entry) {
 
   const meta = document.createElement('div');
   meta.className = 'history-meta';
-  const sourceLabel = { back: 'retro', knock: 'colpi sul Mac', screen: 'schermo', listen: 'ascolto' }[entry.source] || entry.source;
+  const sourceLabel = { back: 'retro', knock: 'colpi sul Mac', screen: 'schermo', listen: 'ascolto', file: 'file' }[entry.source] || entry.source;
   meta.textContent = `${dateFormat.format(entry.createdAt)} · ${sourceLabel}`;
 
   li.append(value, tools);
@@ -1086,6 +1171,32 @@ els.listenBtn.addEventListener('click', toggleListening);
 els.skipCalibration.addEventListener('click', () => listener.skipCalibration());
 els.keyCheckButtons.forEach((button) => button.addEventListener('click', () => chooseKey(Number(button.dataset.check))));
 els.metroBtn.addEventListener('click', toggleMainMetronome);
+els.fileInput.accept = FILE_ACCEPT;
+els.fileBtn.addEventListener('click', () => els.fileInput.click());
+els.fileInput.addEventListener('change', () => {
+  startFileAnalysis(els.fileInput.files[0]);
+  els.fileInput.value = '';
+});
+// Trascina un file audio in qualsiasi punto della pagina.
+let dragDepth = 0;
+const hasFiles = (event) => [...(event.dataTransfer?.types || [])].includes('Files');
+window.addEventListener('dragenter', (event) => {
+  if (!hasFiles(event)) return;
+  dragDepth += 1;
+  els.dropOverlay.hidden = false;
+});
+window.addEventListener('dragleave', () => {
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (!dragDepth) els.dropOverlay.hidden = true;
+});
+window.addEventListener('dragover', (event) => { if (hasFiles(event)) event.preventDefault(); });
+window.addEventListener('drop', (event) => {
+  if (!hasFiles(event)) return;
+  event.preventDefault();
+  dragDepth = 0;
+  els.dropOverlay.hidden = true;
+  startFileAnalysis(event.dataTransfer.files[0]);
+});
 for (const container of [els.chordChips, els.historyList]) {
   container.addEventListener('click', (event) => {
     const chip = event.target.closest('.chord-chip');

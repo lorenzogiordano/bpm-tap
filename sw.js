@@ -2,7 +2,7 @@
 // Strategia: precache dei file dell'app, poi "prima la rete": online si usa
 // sempre l'ultima versione pubblicata (e si aggiorna la cache), offline la cache.
 // Aumenta VERSION a ogni rilascio per ripulire le cache vecchie.
-const VERSION = 'bpm-tap-v8';
+const VERSION = 'bpm-tap-v9';
 
 const ASSETS = [
   './',
@@ -14,6 +14,7 @@ const ASSETS = [
   './knock.js',
   './mac-motion.js',
   './listen.js',
+  './file-analysis.js',
   './sound.js',
   './audio/dsp.js',
   './audio/rhythm.js',

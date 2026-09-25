@@ -150,13 +150,19 @@ function keyUpdate() {
   const run = skey.run(audio, { from: covering ? 0 : state.skeyUntil - start });
   state.deepAverage.add(run, covering);
   state.skeyUntil = state.seconds;
-  const blocks = { ...chromaBlocks(frames, { gamma: keyModel.gamma }), ...skeyBlocks({ p: run.p, deep: state.deepAverage.deep }) };
+  state.key = keyFrom(run.p, state.deepAverage.deep, frames);
+  return state.key;
+}
+
+// Tonalità dai profili di S-KEY (e dal cromagramma, se il modello lo usa).
+function keyFrom(p, deep, frames = []) {
+  const blocks = { ...chromaBlocks(frames, { gamma: keyModel.gamma }), ...skeyBlocks({ p, deep }) };
   const probs = softmax(scoreKeys(standardize(blocks, keyModel.blocks, keyModel.scales), keyModel.weights));
-  const order = probs.map((p, i) => [p, i]).sort((a, b) => b[0] - a[0]);
+  const order = probs.map((v, i) => [v, i]).sort((a, b) => b[0] - a[0]);
   const asKey = (i) => ({ tonic: i % 12, mode: i < 12 ? 'major' : 'minor' });
   const best = asKey(order[0][1]);
   const second = asKey(order[1][1]);
-  state.key = {
+  return {
     ...best,
     name: keyName(best),
     probability: order[0][0],
@@ -164,7 +170,41 @@ function keyUpdate() {
     alternativeKey: second,
     alternativeProbability: order[1][0],
   };
-  return state.key;
+}
+
+// ---------- File intero ----------
+
+// Analisi di un brano completo (già a 22050 Hz, mono): tutto in una volta, più veloce del
+// tempo reale, con l'avanzamento. S-KEY gira su finestre consecutive di 30 s, unite con
+// DeepAverage come nell'ascolto.
+async function analyzeFile(samples) {
+  const progress = (fraction, stage) => self.postMessage({ type: 'progress', fraction, stage });
+  progress(0, 'load');
+  await loadAssets();
+  start({ sampleRate: RATE, calibrate: false });
+  const step = 5 * RATE;
+  for (let i = 0; i < samples.length; i += step) {
+    analyze(samples.subarray(i, i + step));
+    progress(0.35 * Math.min(1, (i + step) / samples.length), 'rhythm');
+    await new Promise((resolve) => setTimeout(resolve, 0)); // lascia passare i messaggi
+  }
+  const tempo = tempoUpdate();
+  const avg = new DeepAverage();
+  const span = SKEY_WINDOW * RATE;
+  let run = null;
+  for (let s = 0; s < samples.length; s += span) {
+    const part = samples.subarray(s, Math.min(samples.length, s + span));
+    if (part.length < 3 * RATE && run) break;
+    run = skey.run(part);
+    avg.add(run, s === 0);
+    progress(0.35 + 0.45 * Math.min(1, (s + span) / samples.length), 'key');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  state.key = run ? keyFrom(run.p, avg.deep) : null;
+  progress(0.85, 'chords');
+  const chords = chordUpdate();
+  progress(1, 'done');
+  self.postMessage({ type: 'result', seconds: state.seconds, tempo, key: state.key, chords });
 }
 
 // Accordi: cromagramma per battito, punteggi con la tonalità come preferenza, HMM, e quota
@@ -259,6 +299,10 @@ function analyze(samples) {
 }
 
 self.onmessage = async ({ data }) => {
+  if (data.type === 'file') {
+    analyzeFile(data.samples).catch((error) => self.postMessage({ type: 'error', message: String(error.stack || error) }));
+    return;
+  }
   if (data.type === 'start') {
     start(data);
     loadAssets().catch((error) => self.postMessage({ type: 'error', message: String(error) }));
