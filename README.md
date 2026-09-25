@@ -2,7 +2,7 @@
 
 Web app installabile (PWA) per misurare i BPM di una canzone battendo **sul retro dell'iPhone**, letto dall'accelerometro, oppure sullo schermo. Più tap fai, più il valore è preciso; quando smetti, la misura si salva da sola.
 
-La modalità **Ascolta** ricava BPM e **tonalità** direttamente dalla canzone, dal microfono.
+La modalità **Ascolta** ricava BPM, **tonalità** e **accordi** direttamente dalla canzone, dal microfono. Sui **MacBook** si può bussare sulla scocca, letta dal sensore di movimento interno. Ogni BPM trovato si può **ascoltare** con un metronomo.
 
 Nessuna dipendenza, nessun passaggio di build: sono file statici.
 
@@ -16,7 +16,8 @@ Nessuna dipendenza, nessun passaggio di build: sono file statici.
 Se usi **Tocco posteriore** (Impostazioni › Accessibilità › Tocco), disattivalo: i doppi tap aprirebbero la sua azione.
 
 - **÷2 / ×2** correggono il classico errore di metà o doppio tempo. Valgono anche sulla misura appena salvata.
-- La modalità **Schermo** usa un'area grande dello schermo. Su computer funzionano anche Spazio o Invio, ed Esc per ricominciare.
+- **▶ Senti i BPM** fa partire un metronomo al valore trovato, sulla misura appena fatta e su ogni misura salvata. Lo ascolti sopra la canzone e capisci subito se il valore è giusto o va dimezzato o raddoppiato; il metronomo segue ÷2 e ×2 al volo. Su iPhone si sente anche con l'interruttore del silenzio attivo.
+- La modalità **Schermo** usa un'area grande dello schermo.
 - Il pannello **Sensore** (icona in alto a destra) mostra il segnale dal vivo e la soglia, e permette di regolare la sensibilità. **Esporta dati del sensore** salva gli ultimi 20 s di dati grezzi (JSON): servono per tarare il rilevamento su un iPhone reale.
 
 ### Modalità Ascolta
@@ -28,7 +29,33 @@ Se usi **Tocco posteriore** (Impostazioni › Accessibilità › Tocco), disatti
    - **sicura**: giusta circa 9 volte su 10;
    - **probabile**: circa 2 volte su 3;
    - **incerta**: con l'alternativa più vicina.
-5. Tocca **Ferma e salva**. Poi puoi **verificare a orecchio**: l'app suona l'accordo di "casa" della tonalità trovata e dell'alternativa, e tu scegli quella che suona giusta sopra la canzone. Tra le prime due la tonalità giusta c'è in circa 3 casi su 4.
+5. Dopo circa 20 s compaiono gli **accordi** principali della canzone: solo quelli che occupano almeno il 10% del tempo ascoltato. Toccane uno per sentirlo (a ascolto fermo).
+6. Tocca **Ferma e salva**. Poi puoi **verificare a orecchio**: l'app suona la cadenza I–IV–V–I (i–iv–V–i in minore) della tonalità trovata e dell'alternativa, e tu tieni quella che "torna a casa" con la canzone. Tra le prime due la tonalità giusta c'è in circa 3 casi su 4.
+
+### Sul computer
+
+Con mouse o trackpad e una finestra larga, l'interfaccia passa a due colonne: a sinistra il quadrante grande e i comandi, a destra le misure salvate. Si usa soprattutto con la tastiera:
+
+| Tasto | Azione |
+|---|---|
+| Spazio (o Invio) | un tap; in modalità Ascolta avvia o ferma l'ascolto |
+| A | ascolta una canzone |
+| M | metronomo sì/no |
+| ↓ / ↑ | ÷2 / ×2 |
+| Esc | nuova misura |
+
+Su Windows e Linux la modalità Retro non c'è: i browser dei computer non danno accesso a sensori di movimento.
+
+### Bussa sul MacBook
+
+I MacBook con chip M2 o successivo (e M1 Pro o M1 Max) hanno un sensore di movimento interno (accelerometro e giroscopio) che nessun browser può leggere. Lo legge un piccolo programma, [mac/bpm-knock.py](mac/bpm-knock.py): usa solo la libreria standard di Python, non chiede la password e non installa nulla.
+
+1. Scarica `bpm-knock.py` (il link è nel foglio della modalità **Bussa**) e avvialo nel Terminale: `python3 ~/Downloads/bpm-knock.py`.
+2. Si apre da solo `http://localhost:8765`, l'app collegata al sensore. Funziona in Safari, Chrome e Firefox.
+3. Bussa con le nocche vicino al trackpad, a tempo con la canzone. La canzone può suonare anche dagli altoparlanti del Mac: non muovono il sensore (verificato a volume massimo).
+4. Per chiudere: Ctrl+C nel Terminale.
+
+Il programma passa i dati del sensore solo alle pagine dell'app: dalle vibrazioni si potrebbe perfino intuire cosa si scrive sulla tastiera.
 
 ## Installazione su iPhone
 
@@ -125,6 +152,20 @@ Quanto è affidabile la risposta (dal microfono, brani mai visti): con probabili
 La perdita dal microfono viene soprattutto dall'eco della stanza e dalle casse piccole, che tolgono i bassi; il rumore pesa meno. Per questo avvicinarsi alla cassa recupera tra metà e il 70% della differenza.
 
 **Limiti.** Le prove usano estratti da 30 s e una stanza simulata, non registrazioni con un iPhone vero. Brani con cambi di tonalità, modali o senza un centro tonale chiaro non hanno una risposta giusta sola. Per questo c'è la verifica a orecchio.
+
+### Dal sensore del MacBook ai colpi ([knock.js](knock.js), [mac/bpm-knock.py](mac/bpm-knock.py))
+
+- **Il sensore.** È un accelerometro e giroscopio MEMS (ritenuto un Bosch BMI286) gestito dal Sensor Processing Unit di Apple ed esposto come dispositivo HID `AppleSPUHIDDevice` (pagina 0xFF00, uso 3). Lo hanno reso noto [olvvier/apple-silicon-accelerometer](https://github.com/olvvier/apple-silicon-accelerometer) (licenza MIT) e [taigrr/spank](https://github.com/taigrr/spank), il progetto "schiaffeggia il MacBook" da cui è nata l'app [SlapMac](https://slapmac.com/). Si accende impostando alcune proprietà del driver (`SensorPropertyReportingState`, `SensorPropertyPowerState`, `ReportInterval`), poi manda resoconti di 22 byte: x, y, z interi a 32 bit dal byte 6, in 1/65536 g.
+- **Il programma.** Legge il sensore con `ctypes` (IOKit e CoreFoundation) in un thread con il suo run loop, a circa 794 campioni al secondo con i tempi dell'hardware. Serve l'app su `localhost:8765` e manda i campioni come Server-Sent Events ogni 15 ms. La pagina porta i tempi del sensore sull'orologio del browser, usando lo scarto minimo tra arrivo e campione degli ultimi 5 s.
+- **Perché serve.** Chrome ha tolto nel 2024 il supporto al vecchio sensore dei Mac Intel ([commit](https://github.com/chromium/chromium/commit/351828bd24)). WebKit ha i sensori di movimento solo su iOS e Firefox cerca solo quello vecchio. Una pagina https non può parlare con `ws://localhost` in Safari ([bug 171934](https://bugs.webkit.org/show_bug.cgi?id=171934)): per questo il programma serve anche l'app, dalla stessa origine.
+- **Com'è fatto un colpo.** Registrato su un MacBook Pro M3 Max: un colpo di nocche è un'oscillazione smorzata a circa 41 Hz (il Mac rimbalza sui piedini), con il primo semiciclo tra 0,02 e 0,2 g, spenta in circa 150 ms. A riposo il fondo sta sotto 0,006 g. Gli altoparlanti, anche a volume massimo, non si vedono.
+- **Rilevamento.**
+  1. Passa-alto a 10 Hz sui tre assi, poi il modulo.
+  2. Soglia: il massimo tra una forza minima (0,022 g a sensibilità 5) e 6 volte il rumore di fondo.
+  3. Dopo ogni colpo la soglia sale alla coda attesa del rimbalzo, così un colpo non diventa due.
+  4. Dopo 25 ms si decide. Nei 80 ms prima ci dev'essere quiete: la battitura e gli spostamenti non si fermano. Il segnale deve tornare indietro lungo la direzione del picco: un colpo fa vibrare la scocca, una spinta no. Conta anche la forza rispetto ai colpi precedenti, e ci sono 120 ms refrattari. L'istante del colpo è il primo campione a metà della forza.
+  5. Ogni tasto premuto o clic sospende il sensore per 200 ms.
+- **Verifica.** Sulla registrazione guidata il rilevatore ha contato 20 colpi su 20, con intervalli regolari entro ±30 ms e nessun doppio. Su 10 s di spostamenti ha contato un solo colpo falso. La battitura dà qualche falso positivo, ma nell'app è coperta dalla sospensione sui tasti. Alla sensibilità di base contano i colpi normali, non serve picchiare.
 
 ### Piattaforma iOS
 

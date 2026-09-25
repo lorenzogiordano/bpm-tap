@@ -19,11 +19,22 @@
 <body>
   <main class="app">
     <header class="topbar">
+      <div class="brand desktop-only">
+        <img src="icons/icon.svg" alt="" width="30" height="30">
+        <span>BPM Tap</span>
+      </div>
       <div class="seg" role="group" aria-label="Modalità di input">
         <button type="button" class="seg-btn" data-mode="back" aria-pressed="true" id="backModeBtn">Retro</button>
         <button type="button" class="seg-btn" data-mode="screen" aria-pressed="false">Schermo</button>
         <button type="button" class="seg-btn" data-mode="listen" aria-pressed="false">Ascolta</button>
       </div>
+      <p class="shortcuts desktop-only" aria-label="Scorciatoie da tastiera">
+        <span><kbd>Spazio</kbd> batti</span>
+        <span><kbd>A</kbd> ascolta</span>
+        <span><kbd>M</kbd> metronomo</span>
+        <span><kbd>↓</kbd><kbd>↑</kbd> ÷2 ×2</span>
+        <span><kbd>Esc</kbd> nuova</span>
+      </p>
       <button type="button" id="sensorToggle" class="icon-btn" aria-label="Mostra il segnale del sensore" aria-expanded="false">
         <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M2 12h4l2-6 4 13 3-9 2 2h5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
@@ -49,6 +60,11 @@
             <span id="keyAlt" class="key-alt"></span>
           </div>
         </div>
+      </div>
+
+      <div id="chordLine" class="chord-line" hidden>
+        <span class="chord-label">Accordi</span>
+        <div id="chordChips" class="chord-chips"></div>
       </div>
 
       <div class="quality" aria-hidden="true">
@@ -81,6 +97,7 @@
       <button type="button" id="resetBtn" class="btn btn-wide" disabled>Nuova misura</button>
     </div>
 
+    <aside class="side">
     <section id="sensorPanel" class="panel sensor" hidden>
       <div class="panel-head">
         <h2>Sensore</h2>
@@ -106,6 +123,7 @@
       <ul id="historyList" class="history-list"></ul>
       <p id="historyEmpty" class="hint">Le misure si salvano qui da sole, quando smetti di battere o fermi l'ascolto.</p>
     </section>
+    </aside>
   </main>
 
   <div id="startSheet" class="sheet" hidden>

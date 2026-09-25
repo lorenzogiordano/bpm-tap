@@ -3,7 +3,7 @@ import { TapDetector, REJECT_REASONS } from './detector.js';
 import { KnockDetector, KNOCK_REJECT_REASONS } from './knock.js';
 import { MacMotion, servedByHelper } from './mac-motion.js';
 import { Listener } from './listen.js';
-import { Metronome, playCadence, stopCadence, releaseAudioSession } from './sound.js';
+import { Metronome, playCadence, playChord, stopCadence, releaseAudioSession } from './sound.js';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -50,6 +50,8 @@ const els = {
   keyCheckStatus: $('keyCheckStatus'),
   keyCheckButtons: [...document.querySelectorAll('[data-check]')],
   metroBtn: $('metroBtn'),
+  chordLine: $('chordLine'),
+  chordChips: $('chordChips'),
 };
 
 // Dopo un tocco sullo schermo si ignorano i colpi letti dal sensore per un
@@ -100,6 +102,7 @@ function hasMotionSensor() {
   return /Macintosh/.test(ua) && navigator.maxTouchPoints > 1; // iPadOS si presenta come Mac
 }
 const MOTION = hasMotionSensor();
+const DESKTOP = matchMedia('(hover: hover) and (pointer: fine)').matches && !MOTION;
 const MAC = !MOTION && (/Macintosh/.test(navigator.userAgent) || navigator.userAgentData?.platform === 'macOS');
 const KNOCK_SAMPLES = 16000; // ~20 s a 800 Hz per l'esportazione
 
@@ -200,7 +203,7 @@ function newMeasure() {
   if (state.phase === 'tapping') finalize();
   if (state.phase === 'listening') listener.stop();
   estimator.reset();
-  Object.assign(state, { phase: 'idle', multiplier: 1, lockedResult: null, savedId: null, outcome: null, lockedKey: null, listen: null });
+  Object.assign(state, { phase: 'idle', multiplier: 1, lockedResult: null, savedId: null, outcome: null, lockedKey: null, lockedChords: null, listen: null });
   render();
 }
 
@@ -232,7 +235,7 @@ async function toggleListening() {
   stopMetronome();
   releaseAudioSession(); // il microfono ha bisogno della sessione audio "registra e suona"
   Object.assign(state, {
-    phase: 'listening', multiplier: 1, source: 'listen', listen: null, lockedResult: null, lockedKey: null, savedId: null, outcome: null,
+    phase: 'listening', multiplier: 1, source: 'listen', listen: null, lockedResult: null, lockedKey: null, lockedChords: null, savedId: null, outcome: null,
   });
   render();
   try {
@@ -265,6 +268,7 @@ function finalizeListen() {
   state.phase = 'locked';
   state.lockedResult = result;
   state.lockedKey = key;
+  state.lockedChords = shownChords(state.listen?.chords);
   if (result && result.taps >= 8) {
     const entry = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -273,6 +277,7 @@ function finalizeListen() {
       taps: result.taps,
       source: 'listen',
       key: key && { tonic: key.tonic, mode: key.mode, name: key.name, alternative: key.alternative || null, probability: key.probability ?? null },
+      chords: state.lockedChords.length ? state.lockedChords : undefined,
       createdAt: Date.now(),
       name: '',
     };
@@ -341,6 +346,7 @@ function render() {
     els.qualityLabel.textContent = state.phase === 'tapping' ? 'Continua a battere…' : listening ? 'In ascolto…' : '';
   }
   renderListen();
+  renderChords();
   renderMetronome();
 
   els.status.textContent = statusText(result);
@@ -393,6 +399,51 @@ function renderListen() {
   const level = state.phase === 'listening' && state.listen ? state.listen.level : -100;
   const fill = Math.min(1, Math.max(0, (level + 60) / 50)); // −60 dB → vuoto, −10 dB → pieno
   els.levelFill.style.transform = `scaleX(${fill})`;
+}
+
+// ---------- Accordi ----------
+
+// Si mostrano solo gli accordi che occupano almeno il 10% del tempo ascoltato, dopo almeno
+// 20 s: nelle prove (brani mai visti, anche dal microfono) sono nella canzone ~9 volte su 10.
+const CHORD_MIN_SHARE = 0.1;
+const CHORD_MIN_SECONDS = 20;
+const SHARP_NAMES = ['Do', 'Do♯', 'Re', 'Re♯', 'Mi', 'Fa', 'Fa♯', 'Sol', 'Sol♯', 'La', 'La♯', 'Si'];
+const FLAT_NAMES = ['Do', 'Re♭', 'Re', 'Mi♭', 'Mi', 'Fa', 'Sol♭', 'Sol', 'La♭', 'La', 'Si♭', 'Si'];
+
+// Diesis o bemolli come nell'armatura della tonalità (in Re maggiore: Fa♯m, non Sol♭m).
+function usesSharps(key) {
+  if (!key) return false;
+  const major = key.mode === 'minor' ? (key.tonic + 3) % 12 : key.tonic;
+  return [7, 2, 9, 4, 11, 6].includes(major);
+}
+
+function chordName(label, key) {
+  return (usesSharps(key) ? SHARP_NAMES : FLAT_NAMES)[label % 12] + (label < 12 ? '' : 'm');
+}
+
+function shownChords(chords) {
+  if (!chords || chords.seconds < CHORD_MIN_SECONDS) return [];
+  return chords.shares.filter((c) => c.share >= CHORD_MIN_SHARE).map((c) => c.chord);
+}
+
+function chordChip(label, key, playable) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'chord-chip';
+  button.dataset.chord = String(label);
+  button.textContent = chordName(label, key);
+  button.disabled = !playable;
+  button.setAttribute('aria-label', `${chordName(label, key)}: ascolta l'accordo`);
+  return button;
+}
+
+function renderChords() {
+  const listening = state.phase === 'listening';
+  const labels = listening ? shownChords(state.listen?.chords) : state.phase === 'locked' ? state.lockedChords || [] : [];
+  const key = listening ? state.listen?.key : state.lockedKey;
+  els.chordLine.hidden = labels.length === 0;
+  // Durante l'ascolto non si suonano: il microfono li sentirebbe.
+  els.chordChips.replaceChildren(...labels.map((label) => chordChip(label, key, !listening)));
 }
 
 // Affidabilità della tonalità: la probabilità del modello, e l'alternativa quando è vicina.
@@ -462,7 +513,9 @@ function statusText(result) {
       : 'Non ho sentito abbastanza ritmo per salvare la misura.';
   }
   if (state.mode === 'listen') {
-    return 'Fai suonare la canzone da un altro dispositivo (cassa, computer), tieni il telefono vicino alla cassa e tocca «Inizia ad ascoltare».';
+    return DESKTOP
+      ? 'Fai suonare la canzone, anche da questo computer, e premi «Inizia ad ascoltare» (o Spazio).'
+      : 'Fai suonare la canzone da un altro dispositivo (cassa, computer), tieni il telefono vicino alla cassa e tocca «Inizia ad ascoltare».';
   }
   if (state.phase === 'locked') {
     return state.outcome === 'saved'
@@ -474,7 +527,9 @@ function statusText(result) {
       ? 'Più tap fai, più il valore è preciso. Fermati per salvare.'
       : 'Continua a battere a tempo…';
   }
-  if (state.mode === 'screen') return 'Batti qui sopra a tempo con la canzone.';
+  if (state.mode === 'screen') {
+    return DESKTOP ? 'Premi la barra spaziatrice (o clicca qui) a tempo con la canzone.' : 'Batti qui sopra a tempo con la canzone.';
+  }
   return state.sensorOn
     ? (MAC ? 'Bussa sul Mac a tempo con la canzone.' : 'Batti sul retro a tempo con la canzone.')
     : (MAC ? 'Avvia il programma del sensore per bussare sul Mac.' : 'Attiva il sensore per battere sul retro.');
@@ -723,6 +778,10 @@ function setMode(requested) {
   stopMetronome();
   if (state.phase === 'tapping') finalize();
   if (state.phase === 'listening') listener.stop();
+  // La misura appena fatta è già nello storico: la nuova modalità parte pulita.
+  if (state.phase === 'locked' && mode !== state.mode) {
+    Object.assign(state, { phase: 'idle', multiplier: 1, lockedResult: null, savedId: null, outcome: null, lockedKey: null, lockedChords: null, listen: null });
+  }
   state.mode = mode;
   store.set(KEYS.mode, mode);
   els.pad.dataset.mode = mode;
@@ -806,6 +865,12 @@ function historyItem(entry) {
     play.classList.add('chip-small');
     key.append(play, label);
     li.append(key);
+  }
+  if (entry.chords?.length) {
+    const row = document.createElement('div');
+    row.className = 'history-chords';
+    row.append(...entry.chords.map((label) => chordChip(label, entry.key, true)));
+    li.append(row);
   }
   li.append(name, meta);
   return li;
@@ -981,13 +1046,32 @@ for (const type of ['pointerdown', 'pointerup', 'keydown']) {
   window.addEventListener(type, (event) => { state.lastTouch = eventTime(event); }, { capture: true, passive: true });
 }
 
+// Tastiera (sul computer è il modo principale): Spazio batte (o avvia e ferma l'ascolto),
+// A ascolta, M metronomo, frecce ÷2 e ×2, Esc nuova misura. Spazio batte anche se un
+// pulsante ha il focus; Invio su un pulsante lo preme, come sempre.
 window.addEventListener('keydown', (event) => {
-  if (event.repeat || (event.target instanceof Element && event.target.closest('input, textarea, select, button'))) return;
-  if ((event.code === 'Space' || event.code === 'Enter') && state.mode !== 'listen') {
+  if (event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
+  const target = event.target instanceof Element ? event.target : null;
+  if (target?.closest('input, textarea, select')) return;
+  if (!els.startSheet.hidden && event.code !== 'Escape') return;
+  const onButton = Boolean(target?.closest('button'));
+  if (event.code === 'Space' || (event.code === 'Enter' && !onButton)) {
     event.preventDefault();
-    onTap(eventTime(event), 'screen');
+    if (state.mode === 'listen') toggleListening();
+    else onTap(eventTime(event), 'screen');
   } else if (event.code === 'Escape') {
     newMeasure();
+  } else if (event.code === 'KeyM') {
+    toggleMainMetronome();
+  } else if (event.code === 'ArrowUp' && !els.doubleBtn.disabled) {
+    event.preventDefault();
+    scale(2);
+  } else if (event.code === 'ArrowDown' && !els.halfBtn.disabled) {
+    event.preventDefault();
+    scale(0.5);
+  } else if (event.code === 'KeyA') {
+    if (state.mode !== 'listen') setMode('listen');
+    toggleListening();
   }
 });
 
@@ -1002,6 +1086,14 @@ els.listenBtn.addEventListener('click', toggleListening);
 els.skipCalibration.addEventListener('click', () => listener.skipCalibration());
 els.keyCheckButtons.forEach((button) => button.addEventListener('click', () => chooseKey(Number(button.dataset.check))));
 els.metroBtn.addEventListener('click', toggleMainMetronome);
+for (const container of [els.chordChips, els.historyList]) {
+  container.addEventListener('click', (event) => {
+    const chip = event.target.closest('.chord-chip');
+    if (!chip || chip.disabled) return;
+    stopMetronome();
+    playChord(Number(chip.dataset.chord));
+  });
+}
 
 // ---------- Avvio ----------
 

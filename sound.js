@@ -149,3 +149,20 @@ export function playCadence({ tonic, mode }) {
   });
   return (chords.length + 1) * STEP;
 }
+
+// Un accordo (0–11 maggiori, 12–23 minori, Do = 0) in posizione fondamentale, con il basso.
+export function playChord(label) {
+  const ac = context();
+  stopCadence();
+  const master = ac.createGain();
+  master.gain.value = 0.22;
+  master.connect(ac.destination);
+  voice = { master, ac };
+  const tonic = label % 12;
+  let root = 60 + tonic;
+  if (root > 66) root -= 12;
+  const third = label < 12 ? 4 : 3;
+  const start = ac.currentTime + 0.03;
+  for (const interval of [0, third, 7]) note(ac, master, root + interval, start, 1.6, 0.5);
+  note(ac, master, root - 12, start, 1.6, 0.6);
+}

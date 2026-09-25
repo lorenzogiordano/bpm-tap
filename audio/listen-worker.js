@@ -13,12 +13,15 @@ import { ChromaAnalyzer, fold, keyName } from './key.js';
 import { tempoCandidates, chooseTempo } from './tempo-choice.js';
 import { SKey, SKEY_RATE, DeepAverage } from './skey.js';
 import { chromaBlocks, skeyBlocks, standardize, scoreKeys, softmax } from './key-features.js';
+import { beatChroma, chordScores, transitionMatrix, decode, chordShares, keyBonus } from './chords.js';
 
 const RATE = SKEY_RATE;             // 22050 Hz per tutte le analisi
 const SKEY_WINDOW = 30;             // secondi di audio dati a S-KEY
 const KEY_EVERY = 8;                // ogni quanti secondi aggiornare la tonalità
 const CALIBRATION_SECONDS = 3;
-const WAIT_LIMIT = 6;               // se la musica non "parte" entro 6 s, si ascolta comunque
+const WAIT_LIMIT = 6;
+const CHORD_HOP = 2048;             // 93 ms: cromagramma per gli accordi, più fitto di quello della tonalità
+const CHORD_MIN_SECONDS = 10;               // se la musica non "parte" entro 6 s, si ascolta comunque
 // Indizi che richiedono il cromagramma (se il modello non li usa, il cromagramma non si calcola).
 const CHROMA_BLOCKS = new Set(['treble', 'bass', 'active', 'majtriad', 'mintriad', 'gbass']);
 const needsChroma = () => Boolean(keyModel && keyModel.blocks.some((b) => CHROMA_BLOCKS.has(b)));
@@ -26,15 +29,20 @@ const needsChroma = () => Boolean(keyModel && keyModel.blocks.some((b) => CHROMA
 let state = null;
 let skey = null;
 let keyModel = null;
+let chordModel = null;
+let chordTransitions = null;
 
 async function loadAssets() {
-  if (skey && keyModel) return;
-  const [graph, model] = await Promise.all([
+  if (skey && keyModel && chordModel) return;
+  const [graph, model, chords] = await Promise.all([
     fetch(new URL('./skey-graph.json', import.meta.url)).then((r) => r.json()),
     fetch(new URL('./key-model.json', import.meta.url)).then((r) => r.json()),
+    fetch(new URL('./chord-model.json', import.meta.url)).then((r) => r.json()),
   ]);
   skey = new SKey(graph);
   keyModel = model;
+  chordModel = chords;
+  chordTransitions = transitionMatrix(chords.transitions);
 }
 
 function start({ sampleRate, calibrate }) {
@@ -49,8 +57,13 @@ function start({ sampleRate, calibrate }) {
     musicSum: 0,        // potenza della musica durante l'ascolto
     musicCount: 0,
     loud: 0,
-    rhythm: new RhythmAnalyzer({ sampleRate: RATE }),
+    rhythm: new RhythmAnalyzer({ sampleRate: RATE, beatSeconds: 180 }),
     chroma: new ChromaAnalyzer({ sampleRate: RATE, method: 'nnls' }),
+    chordChroma: new ChromaAnalyzer({ sampleRate: RATE, method: 'nnls', hop: CHORD_HOP }),
+    chordFrames: [],    // cromagramma NNLS di ogni frame (calcolato una volta)
+    chordTuning: null,
+    bpm: null,
+    chords: null,
     recent: new Float32Array(SKEY_WINDOW * RATE), // ultimi 30 s di audio (buffer circolare)
     recentLength: 0,
     recentPos: 0,
@@ -96,6 +109,8 @@ function tempoUpdate() {
   const choice = chooseTempo(candidates);
   if (!choice) return null;
   const beats = rhythm.beats(choice.bpm);
+  state.bpm = choice.bpm;
+  state.beats = beats;
   const r = beats.length >= 8 ? fitBeats(beats, choice.bpm) : null;
   const fine = r && r.beats >= 8 && Math.abs(r.bpm / choice.bpm - 1) < 0.04;
   const bpm = fine ? r.bpm : choice.bpm;
@@ -150,6 +165,29 @@ function keyUpdate() {
     alternativeProbability: order[1][0],
   };
   return state.key;
+}
+
+// Accordi: cromagramma per battito, punteggi con la tonalità come preferenza, HMM, e quota
+// di tempo di ogni accordo su tutto l'ascoltato.
+function chordUpdate() {
+  if (!chordModel || !state.beats || state.seconds < CHORD_MIN_SECONDS) return state.chords;
+  const { chordChroma } = state;
+  // L'intonazione si stima una volta, dopo i primi secondi; poi ogni frame si calcola una volta sola.
+  if (state.chordTuning === null) state.chordTuning = chordChroma.tuningCents();
+  for (let k = state.chordFrames.length; k < chordChroma.frames.length; k++) {
+    const record = chordChroma.frames[k];
+    state.chordFrames.push(record.log ? chordChroma.frameChroma(record, state.chordTuning) : { treble: new Float64Array(36), bass: new Float64Array(36) });
+  }
+  const centre = chordChroma.cfg.frameSize / 2 / RATE;
+  const times = state.chordFrames.map((_, k) => (k * CHORD_HOP) / RATE + centre);
+  const beats = beatChroma(state.chordFrames, times, state.beats);
+  if (beats.length < 8) return state.chords;
+  const bonus = keyBonus(state.key, chordModel.keyPrior, chordModel.keyWeight);
+  const t = chordModel.temperature || 1;
+  const scores = chordScores(beats, chordModel.emission, bonus).map((row) => row.map((x) => x / t));
+  const { posteriors } = decode(scores, chordTransitions);
+  state.chords = { shares: chordShares(beats, posteriors).slice(0, 8), seconds: state.seconds };
+  return state.chords;
 }
 
 // Quanto la musica supera il rumore della stanza (dB), se il silenzio è stato misurato.
@@ -215,6 +253,7 @@ function analyze(samples) {
   state.musicCount += samples.length;
   state.rhythm.push(samples);
   if (!keyModel || needsChroma()) state.chroma.push(samples);
+  state.chordChroma.push(samples);
   remember(samples);
   state.seconds += samples.length / RATE;
 }
@@ -249,6 +288,7 @@ self.onmessage = async ({ data }) => {
   if (state.seconds - state.lastKeyAt >= KEY_EVERY || (!key && state.seconds >= 6)) {
     state.lastKeyAt = state.seconds;
     key = keyUpdate();
+    chordUpdate();
   }
-  post({ tempo, key });
+  post({ tempo, key, chords: state.chords });
 };

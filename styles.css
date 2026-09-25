@@ -602,3 +602,159 @@ button { font: inherit; color: inherit; }
   user-select: all;
   -webkit-user-select: all;
 }
+
+/* ---------- Accordi ---------- */
+
+.chord-line {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  margin: 4px 0 10px;
+}
+
+.chord-line[hidden] { display: none; }
+
+.chord-label {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.chord-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+}
+
+.chord-chip {
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.chord-chip:active { border-color: var(--accent); }
+
+.history-chords {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.history-chords .chord-chip { padding: 3px 10px; font-size: 13px; }
+
+/* ---------- Computer: interfaccia a due colonne ----------
+   Solo con mouse o trackpad e finestra larga (telefoni e iPad restano a una colonna). */
+
+.desktop-only { display: none; }
+
+.side {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+kbd {
+  display: inline-block;
+  min-width: 1.6em;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: 600 12px/1.5 var(--sans);
+  text-align: center;
+}
+
+@media (min-width: 1000px) and (hover: hover) and (pointer: fine) {
+  .desktop-only { display: flex; }
+
+  .app {
+    max-width: 1280px;
+    min-height: 100dvh;
+    display: grid;
+    grid-template-columns: minmax(0, 1.55fr) minmax(360px, 1fr);
+    grid-template-rows: auto 1fr auto;
+    grid-template-areas:
+      "top top"
+      "stage side"
+      "actions side";
+    gap: 20px 28px;
+    padding: 24px 32px 32px;
+  }
+
+  .topbar { grid-area: top; gap: 20px; }
+
+  .brand {
+    align-items: center;
+    gap: 10px;
+    margin-right: auto;
+    font-size: 19px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+
+  .brand img { border-radius: 8px; }
+
+  .shortcuts {
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 14px;
+    margin: 0 0 0 auto;
+    font-size: 13px;
+    color: var(--muted);
+  }
+
+  .shortcuts span { display: inline-flex; align-items: center; gap: 4px; }
+
+  .pad {
+    grid-area: stage;
+    min-height: 0;
+    padding: 40px 32px 32px;
+    gap: 24px;
+  }
+
+  .dial { width: min(50vh, 460px); }
+  .bpm { font-size: clamp(110px, 15vh, 156px); }
+  .meta { font-size: 17px; }
+  .key-name { font-size: 24px; }
+  .chord-chip { padding: 8px 16px; font-size: 17px; }
+  .status { max-width: 44ch; font-size: 16px; }
+  .quality { width: 280px; }
+
+  .listen-controls { width: min(100%, 420px); }
+
+  .actions {
+    grid-area: actions;
+    grid-template-columns: 110px 110px 1fr;
+  }
+
+  .side {
+    grid-area: side;
+    position: sticky;
+    top: 24px;
+    align-self: start;
+    max-height: calc(100dvh - 48px);
+    overflow-y: auto;
+    scrollbar-width: thin;
+  }
+
+  .history .panel-head h2 { font-size: 15px; }
+  .history-item { padding: 14px 0; }
+  .history-bpm { font-size: 30px; }
+
+  /* Il foglio iniziale diventa una finestra al centro. */
+  .sheet { align-items: center; justify-items: center; }
+  .sheet-card { max-width: 520px; }
+
+  .pad[data-mode="screen"]:hover { border-color: var(--faint); }
+}
