@@ -2,7 +2,9 @@
 // nessuno): decodifica a 22050 Hz (decodeAudioData ricampiona alla frequenza del contesto,
 // così la memoria si dimezza), media dei canali, poi il Worker dell'ascolto.
 
-export const FILE_ACCEPT = 'audio/*,.mp3,.m4a,.aac,.wav,.aif,.aiff,.flac,.ogg,.opus,.caf';
+// Niente "audio/*" da solo: su iPhone viene trattato come video/* e nasconde gli MP3
+// (WebKit bug 242110). Estensioni e tipi espliciti.
+export const FILE_ACCEPT = '.mp3,.m4a,.aac,.wav,.aif,.aiff,.caf,.flac,.ogg,.opus,.webm,audio/mpeg,audio/mp4,audio/wav,audio/x-wav,audio/aiff,audio/flac,audio/ogg';
 const RATE = 22050;
 const MAX_SECONDS = 15 * 60;
 
