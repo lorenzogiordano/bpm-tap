@@ -8,8 +8,10 @@
 //   3. dopo ogni evento la soglia sale alla coda attesa della sua oscillazione (1,5 volte
 //      un inviluppo esponenziale di 60 ms): la coda non diventa un secondo colpo;
 //   4. dopo 25 ms si decide: quiete nei 80 ms prima (uno spostamento o la battitura
-//      crescono gradualmente o si sovrappongono), forza relativa ai colpi precedenti,
-//      120 ms refrattari. L'istante del colpo è il primo campione a metà della forza.
+//      crescono gradualmente o si sovrappongono); oscillazione, cioè il segnale lungo la
+//      direzione del picco torna indietro oltre il 30% (un colpo fa vibrare la scocca, uno
+//      spostamento no); forza relativa ai colpi precedenti; 120 ms refrattari.
+//      L'istante del colpo è il primo campione a metà della forza.
 // Gli altoparlanti del Mac non muovono il sensore (verificato a volume massimo).
 
 export const KNOCK_DEFAULTS = {
@@ -23,10 +25,12 @@ export const KNOCK_DEFAULTS = {
   refractoryMs: 120,
   noiseFactor: 6,
   relativeStrength: 0.3, // dopo 3 colpi, sotto il 30% della forza tipica si scarta
+  reversal: 0.3,         // ritorno minimo lungo la direzione del picco
 };
 
 export const KNOCK_REJECT_REASONS = {
   moving: 'il Mac si stava muovendo (o stavi scrivendo)',
+  smooth: 'spinta senza vibrazione: uno spostamento, non un colpo',
   weak: 'più debole dei colpi precedenti',
   soon: 'troppo vicino al colpo precedente',
 };
@@ -54,9 +58,10 @@ export class KnockDetector {
     this.cfg.sensitivity = s;
   }
 
-  // Forza minima in g: 0,08 g a sensibilità 5, ×1,3 per ogni passo in meno.
+  // Forza minima in g: 0,022 g a sensibilità 5 (un colpo di nocche normale, non forte),
+  // ×1,25 per ogni passo in meno. Il fondo a riposo sta sotto 0,006 g.
   get minPeak() {
-    return 0.08 * 1.3 ** (5 - this.cfg.sensitivity);
+    return 0.022 * 1.25 ** (5 - this.cfg.sensitivity);
   }
 
   get threshold() {
@@ -86,12 +91,12 @@ export class KnockDetector {
     if (!this.candidate) {
       // Rumore di fondo: media lenta (~0,5 s) aggiornata solo fuori dai colpi e dalle code.
       if (m < this.threshold && ring < this.threshold) this.noise += (m - this.noise) * Math.min(1, dt / 500);
-      if (m > this.threshold && m > ring) this.candidate = { start: t, peak: m, samples: [[t, m]] };
+      if (m > this.threshold && m > ring) this.candidate = { start: t, peak: m, peakVec: [hx, hy, hz], samples: [[t, m, hx, hy, hz]] };
       return null;
     }
     const c = this.candidate;
-    c.samples.push([t, m]);
-    if (m > c.peak) c.peak = m;
+    c.samples.push([t, m, hx, hy, hz]);
+    if (m > c.peak) { c.peak = m; c.peakVec = [hx, hy, hz]; }
     if (t - c.start < cfg.decideMs) return null;
     this.candidate = null;
     return this.decide(c);
@@ -105,9 +110,14 @@ export class KnockDetector {
     for (const [t, m] of this.recent) if (t >= c.start - cfg.preQuietMs && t < c.start - 5) before = Math.max(before, m);
     // Coda del colpo precedente: non conta come "movimento".
     const ringBefore = this.eventPeak * Math.exp(-(c.start - cfg.preQuietMs - this.eventT) / cfg.ringMs);
+    // Ritorno: il minimo della proiezione sulla direzione del picco.
+    const [px, py, pz] = c.peakVec;
+    let back = 0;
+    for (const [, , x, y, z] of c.samples) back = Math.min(back, (x * px + y * py + z * pz) / strength);
     let reason = null;
     if (c.start - this.acceptedT < cfg.refractoryMs) reason = 'soon';
     else if (before > cfg.preQuietRatio * strength && before > ringBefore) reason = 'moving';
+    else if (-back < cfg.reversal * strength) reason = 'smooth';
     else if (this.strengths.length >= 3) {
       const typical = [...this.strengths].sort((a, b) => a - b)[this.strengths.length >> 1];
       if (strength < cfg.relativeStrength * typical) reason = 'weak';

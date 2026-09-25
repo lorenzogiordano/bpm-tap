@@ -60,10 +60,11 @@ test('un colpo fortissimo non diventa due: la coda del rimbalzo resta sotto la s
   assert.equal(hits.length, 4);
 });
 
-test('battitura sulla tastiera (scosse piccole e fitte): nessun colpo', () => {
+// Battitura più forte: nell'app ogni tasto premuto sospende il sensore per 200 ms.
+test('battitura leggera sulla tastiera (scosse piccole e fitte): nessun colpo', () => {
   const random = rng(3);
   const events = [];
-  for (let t = 200; t < 8000; t += 90 + 200 * random()) events.push({ kind: 'knock', t, amp: 0.02 + 0.025 * random() });
+  for (let t = 200; t < 8000; t += 90 + 200 * random()) events.push({ kind: 'knock', t, amp: 0.005 + 0.01 * random() });
   assert.equal(run(signal(8.2, events)).filter((h) => h.ok).length, 0);
 });
 
@@ -73,7 +74,7 @@ test('spostare il Mac sul tavolo (accelerazione lenta): nessun colpo', () => {
 });
 
 test('sensibilità: i colpi leggeri contano solo alzandola', () => {
-  const events = Array.from({ length: 8 }, (_, k) => ({ kind: 'knock', t: 400 + k * 550, amp: 0.06 }));
+  const events = Array.from({ length: 8 }, (_, k) => ({ kind: 'knock', t: 400 + k * 550, amp: 0.018 }));
   const samples = signal(5, events);
   assert.equal(run(samples, { sensitivity: 5 }).filter((h) => h.ok).length, 0);
   assert.equal(run(samples, { sensitivity: 9 }).filter((h) => h.ok).length, 8);

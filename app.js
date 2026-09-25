@@ -64,6 +64,7 @@ const KEYS = {
   history: 'bpmtap.history',
   mode: 'bpmtap.mode',
   sensitivity: 'bpmtap.sensitivity.v2',
+  macSensitivity: 'bpmtap.sensitivity.mac',
   onboarded: 'bpmtap.onboarded',
 };
 
@@ -128,7 +129,7 @@ function stopMetronome() {
   renderMetronome();
 }
 const detector = new TapDetector({ sensitivity: store.get(KEYS.sensitivity, 5) });
-const knockDetector = new KnockDetector({ sensitivity: store.get(KEYS.sensitivity, 5) });
+const knockDetector = new KnockDetector({ sensitivity: store.get(KEYS.macSensitivity, 5) });
 let endTimer = null;
 
 // I timestamp degli eventi sono sulla stessa scala di performance.now();
@@ -933,10 +934,9 @@ els.sensorToggle.addEventListener('click', () => {
 
 els.sensitivity.addEventListener('input', () => {
   const value = Number(els.sensitivity.value);
-  detector.setSensitivity(value);
-  knockDetector.setSensitivity(value);
+  (MAC ? knockDetector : detector).setSensitivity(value);
   els.sensitivityOut.textContent = String(value);
-  store.set(KEYS.sensitivity, value);
+  store.set(MAC ? KEYS.macSensitivity : KEYS.sensitivity, value);
 });
 
 // Esporta gli ultimi ~20 s di dati grezzi, per tarare il rilevamento sul proprio telefono.
@@ -945,7 +945,7 @@ els.exportData.addEventListener('click', async () => {
     app: 'BPM Tap',
     exportedAt: new Date().toISOString(),
     userAgent: navigator.userAgent,
-    sensitivity: detector.cfg.sensitivity,
+    sensitivity: (MAC ? knockDetector : detector).cfg.sensitivity,
     device: MAC ? 'mac' : 'phone',
     columns: MAC ? ['t_ms', 'ax', 'ay', 'az', 'tap_ms'] : ['t_ms', 'ax', 'ay', 'az', 'rotAlpha', 'rotBeta', 'rotGamma', 'tap_ms'],
     samples: motion.raw,
@@ -1005,8 +1005,8 @@ els.metroBtn.addEventListener('click', toggleMainMetronome);
 
 // ---------- Avvio ----------
 
-els.sensitivity.value = String(detector.cfg.sensitivity);
-els.sensitivityOut.textContent = String(detector.cfg.sensitivity);
+els.sensitivity.value = String((MAC ? knockDetector : detector).cfg.sensitivity);
+els.sensitivityOut.textContent = els.sensitivity.value;
 for (const el of document.querySelectorAll('[data-device]')) el.hidden = el.dataset.device !== (MAC ? 'mac' : 'phone');
 if (MAC) {
   document.querySelector('[data-mode="back"]').textContent = 'Bussa';
