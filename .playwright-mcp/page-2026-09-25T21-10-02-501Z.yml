@@ -1,0 +1,34 @@
+- generic [active] [ref=e1]:
+  - main [ref=e2]:
+    - generic [ref=e3]:
+      - group "Modalità di input" [ref=e4]:
+        - button "Retro" [pressed] [ref=e5] [cursor=pointer]
+        - button "Schermo" [ref=e6] [cursor=pointer]
+        - button "Ascolta" [ref=e7] [cursor=pointer]
+      - button "Mostra il segnale del sensore" [ref=e8] [cursor=pointer]
+    - generic [ref=e11]:
+      - generic [ref=e13]:
+        - generic [ref=e14]: —
+        - generic [ref=e15]: BPM
+      - paragraph [ref=e18]: Attiva il sensore per battere sul retro.
+    - generic [ref=e19]:
+      - button "÷2" [disabled] [ref=e20]
+      - button "×2" [disabled] [ref=e21]
+      - button "Nuova misura" [disabled] [ref=e22]
+    - generic [ref=e23]:
+      - heading "Misure salvate" [level=2] [ref=e25]
+      - list
+      - paragraph [ref=e26]: Le misure si salvano qui da sole, quando smetti di battere o fermi l'ascolto.
+  - generic [ref=e28]:
+    - heading "Batti sul retro" [level=1] [ref=e29]
+    - list [ref=e30]:
+      - listitem [ref=e31]: Tieni l'iPhone in mano, schermo verso di te.
+      - listitem [ref=e32]: Batti con un dito sul retro, a tempo con la canzone.
+      - listitem [ref=e33]: Più tap fai, più il valore diventa preciso. Quando smetti, si salva.
+    - paragraph [ref=e34]:
+      - text: Se hai attivo
+      - emphasis [ref=e35]: Tocco posteriore
+      - text: "(Impostazioni › Accessibilità › Tocco), disattivalo: i doppi tap aprirebbero la sua azione."
+    - button "Attiva il sensore" [ref=e36] [cursor=pointer]
+    - button "Usa lo schermo" [ref=e37] [cursor=pointer]
+    - button "Ascolta una canzone (BPM e tonalità)" [ref=e38] [cursor=pointer]

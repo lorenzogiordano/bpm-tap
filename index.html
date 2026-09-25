@@ -20,7 +20,7 @@
   <main class="app">
     <header class="topbar">
       <div class="seg" role="group" aria-label="Modalità di input">
-        <button type="button" class="seg-btn" data-mode="back" aria-pressed="true">Retro</button>
+        <button type="button" class="seg-btn" data-mode="back" aria-pressed="true" id="backModeBtn">Retro</button>
         <button type="button" class="seg-btn" data-mode="screen" aria-pressed="false">Schermo</button>
         <button type="button" class="seg-btn" data-mode="listen" aria-pressed="false">Ascolta</button>
       </div>
@@ -92,8 +92,9 @@
         <input id="sensitivity" type="range" min="1" max="10" step="1" value="5">
         <output id="sensitivityOut" for="sensitivity">5</output>
       </label>
-      <p id="lastHit" class="hint last-hit">Batti sul retro per vedere la forza dei colpi.</p>
-      <p class="hint">Linee arancioni: colpi contati. Linee grigie: colpi scartati (movimento o scossone, colpo non sul retro, tocco troppo leggero). Linea tratteggiata: soglia. Più bassa è la sensibilità, più forti devono essere i colpi.</p>
+      <p id="lastHit" class="hint last-hit" data-device="phone">Batti sul retro per vedere la forza dei colpi.</p>
+      <p class="hint" data-device="phone">Linee arancioni: colpi contati. Linee grigie: colpi scartati (movimento o scossone, colpo non sul retro, tocco troppo leggero). Linea tratteggiata: soglia. Più bassa è la sensibilità, più forti devono essere i colpi.</p>
+      <p class="hint" data-device="mac" hidden>Linee arancioni: colpi contati. Linee grigie: colpi scartati (Mac in movimento, tastiera o trackpad, colpo troppo leggero). Linea tratteggiata: soglia. Più bassa è la sensibilità, più forti devono essere i colpi. Forza in g.</p>
       <button type="button" id="exportData" class="link-btn">Esporta dati del sensore (ultimi 20 s)</button>
     </section>
 
@@ -110,12 +111,18 @@
   <div id="startSheet" class="sheet" hidden>
     <div class="sheet-card">
       <h1 id="sheetTitle">Batti sul retro</h1>
-      <ol class="steps">
+      <ol class="steps" data-device="phone">
         <li>Tieni l'iPhone in mano, schermo verso di te.</li>
         <li>Batti con un dito sul retro, a tempo con la canzone.</li>
         <li>Più tap fai, più il valore diventa preciso. Quando smetti, si salva.</li>
       </ol>
-      <p class="hint">Se hai attivo <em>Tocco posteriore</em> (Impostazioni › Accessibilità › Tocco), disattivalo: i doppi tap aprirebbero la sua azione.</p>
+      <p class="hint" data-device="phone">Se hai attivo <em>Tocco posteriore</em> (Impostazioni › Accessibilità › Tocco), disattivalo: i doppi tap aprirebbero la sua azione.</p>
+      <ol class="steps" data-device="mac" hidden>
+        <li>Il MacBook ha un sensore di movimento che il browser non può leggere: serve un piccolo programma. <a id="helperLink" href="mac/bpm-knock.py" download>Scarica bpm-knock.py</a>.</li>
+        <li>Nel Terminale avvialo con <code>python3 ~/Downloads/bpm-knock.py</code>. Si apre da solo l'app collegata al sensore.</li>
+        <li>Bussa con le nocche vicino al trackpad, a tempo con la canzone.</li>
+      </ol>
+      <p class="hint" data-device="mac" hidden>Serve un MacBook con chip M2 o successivo (oppure M1 Pro o M1 Max). Non chiede la password e non installa nulla; per chiuderlo, Ctrl+C nel Terminale.</p>
       <button type="button" id="enableSensor" class="btn btn-primary">Attiva il sensore</button>
       <button type="button" id="useScreen" class="link-btn">Usa lo schermo</button>
       <button type="button" id="useListen" class="link-btn">Ascolta una canzone (BPM e tonalità)</button>

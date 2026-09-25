@@ -1,5 +1,7 @@
 import { TempoEstimator, DEFAULTS, formatBpm, formatHalfWidth, quality } from './tempo.js';
 import { TapDetector, REJECT_REASONS } from './detector.js';
+import { KnockDetector, KNOCK_REJECT_REASONS } from './knock.js';
+import { MacMotion, servedByHelper } from './mac-motion.js';
 import { Listener } from './listen.js';
 import { Metronome, playCadence, stopCadence, releaseAudioSession } from './sound.js';
 
@@ -88,17 +90,20 @@ const saveHistory = () => store.set(KEYS.history, history);
 
 // ---------- Stato ----------
 
-// Il sensore di movimento c'è su telefoni e tablet. Sui computer (Windows, Linux, Mac) i
-// browser non lo espongono, quindi lì la modalità Retro non si mostra.
+// Il sensore di movimento c'è su telefoni e tablet. Sui computer i browser non lo
+// espongono: sui MacBook lo legge il programma mac/bpm-knock.py (modalità "Bussa"), su
+// Windows e Linux la modalità non si mostra.
 function hasMotionSensor() {
   const ua = navigator.userAgent;
   if (/iPhone|iPad|iPod|Android/i.test(ua) || navigator.userAgentData?.mobile) return true;
   return /Macintosh/.test(ua) && navigator.maxTouchPoints > 1; // iPadOS si presenta come Mac
 }
 const MOTION = hasMotionSensor();
+const MAC = !MOTION && (/Macintosh/.test(navigator.userAgent) || navigator.userAgentData?.platform === 'macOS');
+const KNOCK_SAMPLES = 16000; // ~20 s a 800 Hz per l'esportazione
 
 const state = {
-  mode: store.get(KEYS.mode, MOTION ? 'back' : 'screen'), // back | screen | listen
+  mode: store.get(KEYS.mode, MOTION || servedByHelper() ? 'back' : 'screen'), // back | screen | listen
   phase: 'idle',                      // idle | tapping | listening | locked
   multiplier: 1,
   source: null,
@@ -123,6 +128,7 @@ function stopMetronome() {
   renderMetronome();
 }
 const detector = new TapDetector({ sensitivity: store.get(KEYS.sensitivity, 5) });
+const knockDetector = new KnockDetector({ sensitivity: store.get(KEYS.sensitivity, 5) });
 let endTimer = null;
 
 // I timestamp degli eventi sono sulla stessa scala di performance.now();
@@ -469,8 +475,8 @@ function statusText(result) {
   }
   if (state.mode === 'screen') return 'Batti qui sopra a tempo con la canzone.';
   return state.sensorOn
-    ? 'Batti sul retro a tempo con la canzone.'
-    : 'Attiva il sensore per battere sul retro.';
+    ? (MAC ? 'Bussa sul Mac a tempo con la canzone.' : 'Batti sul retro a tempo con la canzone.')
+    : (MAC ? 'Avvia il programma del sensore per bussare sul Mac.' : 'Attiva il sensore per battere sul retro.');
 }
 
 function flash(accepted) {
@@ -544,17 +550,9 @@ function onMotion(event) {
   motion.scope.push({ s: detector.score, thr: detector.threshold, mark: null });
   if (motion.scope.length > SCOPE_SAMPLES) motion.scope.shift();
 
-  let tap = null;
-  if (hit && state.mode === 'back') {
-    // Toccare lo schermo o il metronomo (l'altoparlante fa vibrare il telefono) non sono tap.
-    const touched = t - state.lastTouch <= TOUCH_GUARD_MS || metronome.playing || performance.now() - metronomeStoppedAt < 300;
-    const ok = hit.ok && !touched;
-    if (ok) tap = hit.time;
-    // L'esito arriva qualche campione dopo il picco: il segno va sul campione giusto.
-    const back = Math.round((t - hit.time) / (1000 / 60));
-    motion.scope[Math.max(0, motion.scope.length - 1 - back)].mark = ok ? 'tap' : 'rejected';
-    showLastHit(hit, touched);
-  }
+  // Toccare lo schermo o il metronomo (l'altoparlante fa vibrare il telefono) non sono tap.
+  const tap = hit && state.mode === 'back'
+    ? reportHit(hit, t, metronome.playing || performance.now() - metronomeStoppedAt < 300) : null;
 
   motion.raw.push([t, src.x, src.y, src.z, r?.alpha, r?.beta, r?.gamma, tap]
     .map((v) => (typeof v === 'number' ? Math.round(v * 10000) / 10000 : v ?? null)));
@@ -563,15 +561,77 @@ function onMotion(event) {
   if (tap !== null) onTap(tap, 'back');
 }
 
+// Esito di un colpo (sensore del telefono o del Mac): segno nel grafico, riga nel pannello,
+// e l'istante del tap se conta.
+function reportHit(hit, t, busy = false) {
+  const touched = t - state.lastTouch <= TOUCH_GUARD_MS || busy;
+  const ok = hit.ok && !touched;
+  // L'esito arriva qualche istante dopo il picco: il segno va sul punto giusto (grafico a ~60 Hz).
+  const back = Math.round((t - hit.time) / (1000 / 60));
+  const mark = motion.scope[Math.max(0, motion.scope.length - 1 - back)];
+  if (mark) mark.mark = ok ? 'tap' : 'rejected';
+  showLastHit(hit, touched);
+  return ok ? hit.time : null;
+}
+
+// ---------- Sensore del MacBook (programma mac/bpm-knock.py) ----------
+
+let knockScope = { n: 0, s: 0 };
+
+function onKnockSample(t, x, y, z) {
+  motion.count += 1;
+  motion.times.push(t);
+  if (motion.times.length > 401) motion.times.shift();
+  const hit = knockDetector.push(t, x, y, z);
+  // Grafico a ~60 Hz: il massimo di ogni gruppo di 13 campioni.
+  knockScope.s = Math.max(knockScope.s, knockDetector.score);
+  if (++knockScope.n >= 13) {
+    motion.scope.push({ s: knockScope.s, thr: knockDetector.threshold, mark: null });
+    if (motion.scope.length > SCOPE_SAMPLES) motion.scope.shift();
+    knockScope = { n: 0, s: 0 };
+  }
+  // Gli altoparlanti del Mac non muovono il sensore: qui il metronomo non disturba.
+  const tap = hit && state.mode === 'back' ? reportHit(hit, t) : null;
+  motion.raw.push([Math.round(t * 100) / 100, x, y, z, tap]);
+  if (motion.raw.length > KNOCK_SAMPLES) motion.raw.shift();
+  if (tap !== null) onTap(tap, 'knock');
+}
+
+const macMotion = new MacMotion({
+  onSample: onKnockSample,
+  onLost() {
+    state.sensorOn = false;
+    if (state.phase === 'tapping') finalize();
+    if (state.mode === 'back') {
+      showStartSheet();
+      showSensorError('mac-lost');
+    }
+    render();
+  },
+});
+
+async function startMacSensor() {
+  els.sensorError.hidden = true;
+  if (!(await macMotion.connect())) {
+    showSensorError(servedByHelper() ? 'mac-lost' : 'mac-missing');
+    return;
+  }
+  knockDetector.reset();
+  state.sensorOn = true;
+  els.startSheet.hidden = true;
+  store.set(KEYS.onboarded, true);
+  render();
+}
+
 // Nel pannello del sensore: forza dell'ultimo colpo e, se scartato, il perché.
 function showLastHit(hit, touched) {
   if (els.sensorPanel.hidden) return;
-  const strength = hit.strength.toFixed(2);
-  const threshold = detector.threshold.toFixed(2);
+  const strength = hit.strength.toFixed(MAC ? 3 : 2);
+  const threshold = (MAC ? knockDetector : detector).threshold.toFixed(MAC ? 3 : 2);
   if (hit.ok && !touched) {
     els.lastHit.textContent = `Ultimo colpo: forza ${strength} (soglia ${threshold})`;
   } else {
-    const why = touched ? 'stavi toccando lo schermo' : REJECT_REASONS[hit.reason];
+    const why = touched ? (MAC ? 'stavi usando il trackpad o la tastiera' : 'stavi toccando lo schermo') : (MAC ? KNOCK_REJECT_REASONS : REJECT_REASONS)[hit.reason];
     els.lastHit.textContent = `Scartato (forza ${strength}): ${why}`;
   }
 }
@@ -607,6 +667,7 @@ async function startMotion() {
 // Deve partire da un "click": su iOS la richiesta di permesso vale solo se
 // nasce da un gesto dell'utente (non da touchstart/pointerdown).
 async function enableSensor() {
+  if (MAC) { startMacSensor(); return; }
   els.sensorError.hidden = true;
   try {
     if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
@@ -624,9 +685,11 @@ function showSensorError(code) {
     denied: 'Permesso negato. iPhone ricorda la scelta finché l\'app resta aperta: chiudila del tutto dal multitasking, riaprila e tocca di nuovo «Attiva il sensore».',
     'no-data': 'Nessun dato dal sensore di movimento su questo dispositivo. Puoi battere sullo schermo.',
     unsupported: 'Questo browser non dà accesso al sensore di movimento. Puoi battere sullo schermo.',
+    'mac-missing': 'Il programma del sensore non risponde. Avvialo (passi 1 e 2) e poi tocca «Collega il sensore». Con Safari apri l\'app all\'indirizzo che il programma apre da solo, http://localhost:8765.',
+    'mac-lost': 'Il programma del sensore si è chiuso. Riavvialo nel Terminale e tocca «Collega il sensore».',
   };
   let text = messages[code] || messages['no-data'];
-  if (!window.isSecureContext) text = 'Il sensore funziona solo con una connessione sicura (https).';
+  if (!window.isSecureContext && !MAC) text = 'Il sensore funziona solo con una connessione sicura (https).';
   els.sensorError.textContent = text;
   els.sensorError.hidden = false;
 }
@@ -655,7 +718,7 @@ document.addEventListener('visibilitychange', () => {
 // ---------- Modalità ----------
 
 function setMode(requested) {
-  const mode = requested === 'back' && !MOTION ? 'screen' : requested;
+  const mode = requested === 'back' && !MOTION && !MAC ? 'screen' : requested;
   stopMetronome();
   if (state.phase === 'tapping') finalize();
   if (state.phase === 'listening') listener.stop();
@@ -665,16 +728,21 @@ function setMode(requested) {
   for (const button of els.modeButtons) {
     button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
   }
-  if (mode === 'back' && !state.sensorOn) showStartSheet();
-  else els.startSheet.hidden = true;
+  if (mode === 'back' && !state.sensorOn) {
+    showStartSheet();
+    if (MAC) startMacSensor(); // se il programma è già aperto, si collega da solo
+  } else {
+    els.startSheet.hidden = true;
+  }
   if (mode === 'back' && state.sensorOn) requestWakeLock();
   render();
 }
 
 function showStartSheet() {
   const onboarded = store.get(KEYS.onboarded, false);
-  els.startSheet.classList.toggle('compact', onboarded);
-  els.sheetTitle.textContent = onboarded ? 'Riattiva il sensore' : 'Batti sul retro';
+  els.startSheet.classList.toggle('compact', onboarded && !MAC);
+  els.sheetTitle.textContent = MAC ? 'Bussa sul MacBook' : onboarded ? 'Riattiva il sensore' : 'Batti sul retro';
+  els.enableSensor.textContent = MAC ? 'Collega il sensore' : 'Attiva il sensore';
   els.startSheet.hidden = false;
 }
 
@@ -722,7 +790,7 @@ function historyItem(entry) {
 
   const meta = document.createElement('div');
   meta.className = 'history-meta';
-  const sourceLabel = { back: 'retro', screen: 'schermo', listen: 'ascolto' }[entry.source] || entry.source;
+  const sourceLabel = { back: 'retro', knock: 'colpi sul Mac', screen: 'schermo', listen: 'ascolto' }[entry.source] || entry.source;
   meta.textContent = `${dateFormat.format(entry.createdAt)} · ${sourceLabel}`;
 
   li.append(value, tools);
@@ -866,6 +934,7 @@ els.sensorToggle.addEventListener('click', () => {
 els.sensitivity.addEventListener('input', () => {
   const value = Number(els.sensitivity.value);
   detector.setSensitivity(value);
+  knockDetector.setSensitivity(value);
   els.sensitivityOut.textContent = String(value);
   store.set(KEYS.sensitivity, value);
 });
@@ -877,7 +946,8 @@ els.exportData.addEventListener('click', async () => {
     exportedAt: new Date().toISOString(),
     userAgent: navigator.userAgent,
     sensitivity: detector.cfg.sensitivity,
-    columns: ['t_ms', 'ax', 'ay', 'az', 'rotAlpha', 'rotBeta', 'rotGamma', 'tap_ms'],
+    device: MAC ? 'mac' : 'phone',
+    columns: MAC ? ['t_ms', 'ax', 'ay', 'az', 'tap_ms'] : ['t_ms', 'ax', 'ay', 'az', 'rotAlpha', 'rotBeta', 'rotGamma', 'tap_ms'],
     samples: motion.raw,
     result: estimator.result(),
   };
@@ -905,8 +975,9 @@ els.pad.addEventListener('pointerdown', (event) => {
   onTap(eventTime(event), 'screen');
 });
 
-// Qualsiasi tocco sullo schermo sospende per un attimo i tap dal sensore.
-for (const type of ['pointerdown', 'pointerup']) {
+// Qualsiasi tocco sullo schermo o tasto premuto (sul Mac scuote la scocca) sospende per un
+// attimo i tap dal sensore.
+for (const type of ['pointerdown', 'pointerup', 'keydown']) {
   window.addEventListener(type, (event) => { state.lastTouch = eventTime(event); }, { capture: true, passive: true });
 }
 
@@ -936,7 +1007,12 @@ els.metroBtn.addEventListener('click', toggleMainMetronome);
 
 els.sensitivity.value = String(detector.cfg.sensitivity);
 els.sensitivityOut.textContent = String(detector.cfg.sensitivity);
-if (!MOTION) {
+for (const el of document.querySelectorAll('[data-device]')) el.hidden = el.dataset.device !== (MAC ? 'mac' : 'phone');
+if (MAC) {
+  document.querySelector('[data-mode="back"]').textContent = 'Bussa';
+  els.lastHit.hidden = false;
+  els.lastHit.textContent = 'Bussa sul Mac per vedere la forza dei colpi.';
+} else if (!MOTION) {
   document.querySelector('[data-mode="back"]').hidden = true;
   els.sensorToggle.hidden = true;
 }
@@ -944,7 +1020,7 @@ renderHistory();
 setMode(state.mode);
 
 // Dove non serve un permesso esplicito (Android, desktop) il sensore parte da solo.
-if (state.mode === 'back' && typeof DeviceMotionEvent !== 'undefined' &&
+if (MOTION && state.mode === 'back' && typeof DeviceMotionEvent !== 'undefined' &&
   typeof DeviceMotionEvent.requestPermission !== 'function') {
   startMotion().catch(() => {});
 }
