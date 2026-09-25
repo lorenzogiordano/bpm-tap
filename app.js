@@ -1,5 +1,6 @@
 import { TempoEstimator, DEFAULTS, formatBpm, formatHalfWidth, quality } from './tempo.js';
 import { TapDetector, REJECT_REASONS } from './detector.js';
+import { Listener } from './listen.js';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -32,7 +33,19 @@ const els = {
   sheetTitle: $('sheetTitle'),
   enableSensor: $('enableSensor'),
   useScreen: $('useScreen'),
+  useListen: $('useListen'),
   sensorError: $('sensorError'),
+  keyLine: $('keyLine'),
+  keyName: $('keyName'),
+  keyAlt: $('keyAlt'),
+  listenControls: $('listenControls'),
+  levelFill: $('levelFill'),
+  listenBtn: $('listenBtn'),
+  listenError: $('listenError'),
+  skipCalibration: $('skipCalibration'),
+  keyCheck: $('keyCheck'),
+  keyCheckStatus: $('keyCheckStatus'),
+  keyCheckButtons: [...document.querySelectorAll('[data-check]')],
 };
 
 // Dopo un tocco sullo schermo si ignorano i colpi letti dal sensore per un
@@ -74,8 +87,8 @@ const saveHistory = () => store.set(KEYS.history, history);
 // ---------- Stato ----------
 
 const state = {
-  mode: store.get(KEYS.mode, 'back'), // back | screen
-  phase: 'idle',                      // idle | tapping | locked
+  mode: store.get(KEYS.mode, 'back'), // back | screen | listen
+  phase: 'idle',                      // idle | tapping | listening | locked
   multiplier: 1,
   source: null,
   lockedResult: null,
@@ -83,6 +96,8 @@ const state = {
   outcome: null,                      // saved | too-few
   sensorOn: false,
   lastTouch: -Infinity,
+  listen: null,                       // ultimo aggiornamento dell'ascolto
+  lockedKey: null,
 };
 
 const estimator = new TempoEstimator();
@@ -153,9 +168,91 @@ function finalize() {
 
 function newMeasure() {
   if (state.phase === 'tapping') finalize();
+  if (state.phase === 'listening') listener.stop();
   estimator.reset();
-  Object.assign(state, { phase: 'idle', multiplier: 1, lockedResult: null, savedId: null, outcome: null });
+  Object.assign(state, { phase: 'idle', multiplier: 1, lockedResult: null, savedId: null, outcome: null, lockedKey: null, listen: null });
   render();
+}
+
+// ---------- Ascolto dal microfono ----------
+
+const listener = new Listener({
+  onUpdate(update) {
+    state.listen = update;
+    render();
+  },
+  onEnd() {
+    finalizeListen();
+  },
+});
+
+function listenResult() {
+  if (state.listen?.phase && state.listen.phase !== 'listening') return null;
+  const t = state.listen?.tempo;
+  if (!t) return null;
+  return { bpm: t.bpm, halfWidth: t.halfWidth, taps: t.beats, valid: t.stable };
+}
+
+async function toggleListening() {
+  if (state.phase === 'listening') {
+    listener.stop();
+    return;
+  }
+  els.listenError.hidden = true;
+  Object.assign(state, {
+    phase: 'listening', multiplier: 1, source: 'listen', listen: null, lockedResult: null, lockedKey: null, savedId: null, outcome: null,
+  });
+  render();
+  try {
+    await listener.start({ calibrate: true });
+    requestWakeLock();
+  } catch (error) {
+    state.phase = 'idle';
+    showListenError(error);
+    render();
+  }
+}
+
+function showListenError(error) {
+  const name = error?.name || error?.message;
+  const messages = {
+    NotAllowedError: 'Permesso del microfono negato. Su iPhone: Impostazioni › Safari › Microfono, oppure riapri l\'app e consenti.',
+    NotFoundError: 'Nessun microfono disponibile.',
+    NotReadableError: 'Il microfono è occupato da un\'altra app (per esempio una chiamata).',
+    unsupported: 'Questo browser non permette di ascoltare dal microfono.',
+  };
+  els.listenError.textContent = messages[name] || `Impossibile ascoltare (${name}).`;
+  els.listenError.hidden = false;
+}
+
+// Fine dell'ascolto: BPM e tonalità restano a schermo e, se affidabili, si salvano.
+function finalizeListen() {
+  if (state.phase !== 'listening') return;
+  const result = listenResult();
+  const key = state.listen?.key || null;
+  state.phase = 'locked';
+  state.lockedResult = result;
+  state.lockedKey = key;
+  if (result && result.taps >= 8) {
+    const entry = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      bpm: result.bpm * state.multiplier,
+      halfWidth: result.halfWidth * state.multiplier,
+      taps: result.taps,
+      source: 'listen',
+      key: key && { tonic: key.tonic, mode: key.mode, name: key.name, alternative: key.alternative || null, probability: key.probability ?? null },
+      createdAt: Date.now(),
+      name: '',
+    };
+    history.unshift(entry);
+    saveHistory();
+    state.savedId = entry.id;
+    state.outcome = 'saved';
+  } else {
+    state.outcome = 'too-few';
+  }
+  render();
+  renderHistory();
 }
 
 // ×2 / ÷2: vale per la misura in corso e per quella appena salvata.
@@ -175,6 +272,7 @@ function scale(factor) {
 
 function currentResult() {
   if (state.phase === 'tapping') return estimator.result();
+  if (state.phase === 'listening') return listenResult();
   if (state.phase === 'locked') return state.lockedResult;
   return null;
 }
@@ -183,9 +281,12 @@ function render() {
   const result = currentResult();
   const m = state.multiplier;
 
-  let visual = state.phase;
-  if (state.phase === 'tapping' && (!result || !result.valid)) visual = 'rough';
+  const listening = state.phase === 'listening';
+  let visual = listening ? 'tapping' : state.phase;
+  if ((state.phase === 'tapping' || listening) && (!result || !result.valid)) visual = 'rough';
   els.pad.dataset.state = visual;
+  els.pad.dataset.listening = String(listening);
+  const unit = (state.phase === 'locked' ? state.source : state.mode) === 'listen' ? 'battiti' : 'tap';
 
   if (result) {
     const bpm = result.bpm * m;
@@ -194,18 +295,19 @@ function render() {
     els.bpmInt.textContent = int;
     els.bpmDec.textContent = dec;
     els.plusMinus.textContent = `${formatHalfWidth(hw)} BPM`;
-    els.tapCount.textContent = `${result.taps} tap`;
+    els.tapCount.textContent = `${result.taps} ${unit}`;
     const q = quality({ ...result, halfWidth: hw });
     els.qualityFill.style.transform = `scaleX(${q.level})`;
-    els.qualityLabel.textContent = q.label;
+    els.qualityLabel.textContent = listening && !result.valid ? 'Si sta stabilizzando…' : q.label;
   } else {
     els.bpmInt.textContent = '—';
     els.bpmDec.textContent = '';
     els.plusMinus.textContent = '';
     els.tapCount.textContent = state.phase === 'tapping' ? '1 tap' : '';
     els.qualityFill.style.transform = 'scaleX(0)';
-    els.qualityLabel.textContent = state.phase === 'tapping' ? 'Continua a battere…' : '';
+    els.qualityLabel.textContent = state.phase === 'tapping' ? 'Continua a battere…' : listening ? 'In ascolto…' : '';
   }
+  renderListen();
 
   els.status.textContent = statusText(result);
   els.halfBtn.disabled = els.doubleBtn.disabled = !result;
@@ -216,7 +318,122 @@ function render() {
   }
 }
 
+// Tonalità, livello del microfono e pulsante dell'ascolto.
+function renderListen() {
+  const inListen = state.mode === 'listen';
+  els.listenControls.hidden = !inListen;
+  const key = state.phase === 'listening' ? state.listen?.key : state.phase === 'locked' ? state.lockedKey : null;
+  els.keyLine.hidden = !key;
+  if (key) {
+    els.keyName.textContent = key.confirmed ? `${key.name} ✓` : key.name;
+    els.keyAlt.textContent = key.confirmed ? 'scelta a orecchio' : keyDetail(key);
+  }
+  const phase = state.listen?.phase;
+  els.skipCalibration.hidden = !(state.phase === 'listening' && (!state.listen || phase === 'calibrating' || phase === 'waiting'));
+  renderKeyCheck();
+  if (!inListen) return;
+  els.listenBtn.textContent = state.phase === 'listening' ? 'Ferma e salva' : 'Inizia ad ascoltare';
+  const level = state.phase === 'listening' && state.listen ? state.listen.level : -100;
+  const fill = Math.min(1, Math.max(0, (level + 60) / 50)); // −60 dB → vuoto, −10 dB → pieno
+  els.levelFill.style.transform = `scaleX(${fill})`;
+}
+
+// Affidabilità della tonalità: la probabilità del modello, e l'alternativa quando è vicina.
+// Soglie tarate su brani mai visti ascoltati dal microfono (lab/key-app-eval.mjs):
+// p ≥ 0,8 → giusta nell'82–95% dei casi; 0,5–0,8 → circa 2 su 3; sotto 0,5 → 1 su 3 o 1 su 2.
+function keyDetail(key) {
+  if (!key.probability) return key.alternative ? `oppure ${key.alternative}` : '';
+  const p = key.probability;
+  const label = p >= 0.8 ? 'sicura' : p >= 0.5 ? 'probabile' : 'incerta';
+  const close = key.alternativeProbability >= 0.5 * p || p < 0.5;
+  return close ? `${label} · oppure ${key.alternative}` : label;
+}
+
+// ---------- Verifica a orecchio della tonalità ----------
+
+let checkAudio = null;
+
+function renderKeyCheck() {
+  const key = state.phase === 'locked' && state.source === 'listen' ? state.lockedKey : null;
+  const show = Boolean(key && key.alternativeKey);
+  els.keyCheck.hidden = !show;
+  if (!show) return;
+  const options = [{ tonic: key.tonic, mode: key.mode, name: key.name }, { ...key.alternativeKey, name: key.alternative }];
+  els.keyCheckButtons.forEach((button, i) => {
+    button.textContent = `▶ ${options[i].name}`;
+    button.setAttribute('aria-pressed', String(Boolean(key.confirmed) && key.tonic === options[i].tonic && key.mode === options[i].mode));
+  });
+}
+
+// Accordo di "casa" morbido (tonica, terza, quinta, ottava) per 4 secondi.
+function playKey({ tonic, mode }) {
+  const Context = window.AudioContext || window.webkitAudioContext;
+  if (!checkAudio) checkAudio = new Context();
+  const ctx = checkAudio;
+  ctx.resume();
+  const now = ctx.currentTime;
+  const midi = [48 + tonic, 48 + tonic + (mode === 'major' ? 4 : 3), 48 + tonic + 7, 60 + tonic];
+  const master = ctx.createGain();
+  master.gain.setValueAtTime(0, now);
+  master.gain.linearRampToValueAtTime(0.18, now + 0.4);
+  master.gain.setValueAtTime(0.18, now + 3.2);
+  master.gain.linearRampToValueAtTime(0, now + 4);
+  master.connect(ctx.destination);
+  midi.forEach((m, i) => {
+    const osc = ctx.createOscillator();
+    osc.type = 'triangle';
+    osc.frequency.value = 440 * 2 ** ((m - 69) / 12);
+    const g = ctx.createGain();
+    g.gain.value = i === 0 ? 1 : 0.55;
+    osc.connect(g).connect(master);
+    osc.start(now);
+    osc.stop(now + 4.05);
+  });
+}
+
+function chooseKey(index) {
+  const key = state.lockedKey;
+  if (!key) return;
+  const options = [{ tonic: key.tonic, mode: key.mode, name: key.name }, { ...key.alternativeKey, name: key.alternative }];
+  const chosen = options[index];
+  playKey(chosen);
+  const other = options[1 - index];
+  state.lockedKey = { ...key, ...chosen, alternative: other.name, alternativeKey: { tonic: other.tonic, mode: other.mode }, confirmed: true };
+  const entry = history.find((e) => e.id === state.savedId);
+  if (entry) {
+    entry.key = { tonic: chosen.tonic, mode: chosen.mode, name: chosen.name, alternative: other.name, confirmed: true };
+    saveHistory();
+    renderHistory();
+  }
+  els.keyCheckStatus.textContent = `Suona ${chosen.name}. Se è quella giusta, tienila; altrimenti ascolta l'altra.`;
+  render();
+}
+
 function statusText(result) {
+  if (state.phase === 'listening') {
+    const phase = state.listen?.phase;
+    if (!state.listen || phase === 'calibrating') {
+      const left = Math.max(1, Math.ceil(3 - (state.listen?.phaseSeconds || 0)));
+      return `Se puoi, lascia ${left} ${left === 1 ? 'secondo' : 'secondi'} di silenzio: misuro il rumore della stanza.`;
+    }
+    if (phase === 'waiting') return 'Ora fai partire la canzone.';
+    const seconds = Math.round(state.listen?.seconds || 0);
+    if (seconds < 3) return 'In ascolto…';
+    // Rumore della stanza misurato nel silenzio iniziale: se copre la musica, meglio avvicinarsi.
+    const snr = state.listen?.snr;
+    if (snr != null && snr < 10) return `In ascolto da ${seconds} s. C'è molto rumore rispetto alla musica: avvicina il telefono alla cassa.`;
+    return result && result.valid
+      ? `In ascolto da ${seconds} s. Il valore è stabile: puoi fermare quando vuoi.`
+      : `In ascolto da ${seconds} s…`;
+  }
+  if (state.phase === 'locked' && state.source === 'listen') {
+    return state.outcome === 'saved'
+      ? 'Salvato. Tocca «Inizia ad ascoltare» per un\'altra canzone.'
+      : 'Non ho sentito abbastanza ritmo per salvare la misura.';
+  }
+  if (state.mode === 'listen') {
+    return 'Fai suonare la canzone da un altro dispositivo (cassa, computer), tieni il telefono vicino alla cassa e tocca «Inizia ad ascoltare».';
+  }
   if (state.phase === 'locked') {
     return state.outcome === 'saved'
       ? 'Salvato. Batti di nuovo per una nuova misura.'
@@ -406,12 +623,15 @@ async function requestWakeLock() {
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && state.sensorOn && state.mode === 'back') requestWakeLock();
+  // In secondo piano iOS spegne il microfono: si chiude l'ascolto e si salva quello che c'è.
+  if (document.visibilityState === 'hidden' && state.phase === 'listening') listener.stop();
 });
 
 // ---------- Modalità ----------
 
 function setMode(mode) {
   if (state.phase === 'tapping') finalize();
+  if (state.phase === 'listening') listener.stop();
   state.mode = mode;
   store.set(KEYS.mode, mode);
   els.pad.dataset.mode = mode;
@@ -452,7 +672,7 @@ function historyItem(entry) {
   value.className = 'history-bpm';
   const { int, dec } = formatBpm(entry.bpm, entry.halfWidth);
   const detail = document.createElement('small');
-  detail.textContent = `${formatHalfWidth(entry.halfWidth)} · ${entry.taps} tap`;
+  detail.textContent = `${formatHalfWidth(entry.halfWidth)} · ${entry.taps} ${entry.source === 'listen' ? 'battiti' : 'tap'}`;
   value.append(`${int}${dec}`, detail);
 
   const tools = document.createElement('div');
@@ -473,9 +693,19 @@ function historyItem(entry) {
 
   const meta = document.createElement('div');
   meta.className = 'history-meta';
-  meta.textContent = `${dateFormat.format(entry.createdAt)} · ${entry.source === 'back' ? 'retro' : 'schermo'}`;
+  const sourceLabel = { back: 'retro', screen: 'schermo', listen: 'ascolto' }[entry.source] || entry.source;
+  meta.textContent = `${dateFormat.format(entry.createdAt)} · ${sourceLabel}`;
 
-  li.append(value, tools, name, meta);
+  li.append(value, tools);
+  if (entry.key) {
+    const key = document.createElement('div');
+    key.className = 'history-key';
+    const unsure = entry.key.alternative && !(entry.key.probability >= 0.8);
+    key.textContent = entry.key.confirmed ? `${entry.key.name} ✓ (scelta a orecchio)`
+      : unsure ? `${entry.key.name} (oppure ${entry.key.alternative})` : entry.key.name;
+    li.append(key);
+  }
+  li.append(name, meta);
   return li;
 }
 
@@ -635,7 +865,7 @@ for (const type of ['pointerdown', 'pointerup']) {
 
 window.addEventListener('keydown', (event) => {
   if (event.repeat || (event.target instanceof Element && event.target.closest('input, textarea, select, button'))) return;
-  if (event.code === 'Space' || event.code === 'Enter') {
+  if ((event.code === 'Space' || event.code === 'Enter') && state.mode !== 'listen') {
     event.preventDefault();
     onTap(eventTime(event), 'screen');
   } else if (event.code === 'Escape') {
@@ -649,6 +879,10 @@ els.doubleBtn.addEventListener('click', () => scale(2));
 els.resetBtn.addEventListener('click', newMeasure);
 els.enableSensor.addEventListener('click', enableSensor);
 els.useScreen.addEventListener('click', () => setMode('screen'));
+els.useListen.addEventListener('click', () => setMode('listen'));
+els.listenBtn.addEventListener('click', toggleListening);
+els.skipCalibration.addEventListener('click', () => listener.skipCalibration());
+els.keyCheckButtons.forEach((button) => button.addEventListener('click', () => chooseKey(Number(button.dataset.check))));
 
 // ---------- Avvio ----------
 

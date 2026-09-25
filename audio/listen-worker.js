@@ -1,0 +1,254 @@
+// Worker dell'ascolto: riceve i campioni del microfono, li porta a 22050 Hz, stima tempo
+// e tonalità e manda aggiornamenti all'app. Gira fuori dal thread dell'interfaccia.
+//
+// Fasi: 'calibrating' (silenzio facoltativo: livello del rumore della stanza) → 'waiting'
+// (si aspetta che parta la musica, così il rumore prima della canzone non entra
+// nell'analisi) → 'listening'. Se la canzone sta già suonando si parte da 'listening'.
+// Il rumore non viene filtrato: nelle prove la sottrazione spettrale non migliorava né
+// tempo né tonalità. Il livello misurato serve a stimare quanto la musica lo supera.
+
+import { Resampler } from './dsp.js';
+import { RhythmAnalyzer, fitBeats } from './rhythm.js';
+import { ChromaAnalyzer, fold, keyName } from './key.js';
+import { tempoCandidates, chooseTempo } from './tempo-choice.js';
+import { SKey, SKEY_RATE, DeepAverage } from './skey.js';
+import { chromaBlocks, skeyBlocks, standardize, scoreKeys, softmax } from './key-features.js';
+
+const RATE = SKEY_RATE;             // 22050 Hz per tutte le analisi
+const SKEY_WINDOW = 30;             // secondi di audio dati a S-KEY
+const KEY_EVERY = 8;                // ogni quanti secondi aggiornare la tonalità
+const CALIBRATION_SECONDS = 3;
+const WAIT_LIMIT = 6;               // se la musica non "parte" entro 6 s, si ascolta comunque
+// Indizi che richiedono il cromagramma (se il modello non li usa, il cromagramma non si calcola).
+const CHROMA_BLOCKS = new Set(['treble', 'bass', 'active', 'majtriad', 'mintriad', 'gbass']);
+const needsChroma = () => Boolean(keyModel && keyModel.blocks.some((b) => CHROMA_BLOCKS.has(b)));
+
+let state = null;
+let skey = null;
+let keyModel = null;
+
+async function loadAssets() {
+  if (skey && keyModel) return;
+  const [graph, model] = await Promise.all([
+    fetch(new URL('./skey-graph.json', import.meta.url)).then((r) => r.json()),
+    fetch(new URL('./key-model.json', import.meta.url)).then((r) => r.json()),
+  ]);
+  skey = new SKey(graph);
+  keyModel = model;
+}
+
+function start({ sampleRate, calibrate }) {
+  state = {
+    phase: calibrate ? 'calibrating' : 'listening',
+    resampler: new Resampler(sampleRate, RATE),
+    noisePower: 0,      // potenza media del silenzio iniziale (0 = non misurata)
+    noiseSum: 0,
+    noiseCount: 0,
+    held: [],           // audio di calibrazione e attesa: se era già musica, si analizza
+    heldLength: 0,
+    musicSum: 0,        // potenza della musica durante l'ascolto
+    musicCount: 0,
+    loud: 0,
+    rhythm: new RhythmAnalyzer({ sampleRate: RATE }),
+    chroma: new ChromaAnalyzer({ sampleRate: RATE, method: 'nnls' }),
+    recent: new Float32Array(SKEY_WINDOW * RATE), // ultimi 30 s di audio (buffer circolare)
+    recentLength: 0,
+    recentPos: 0,
+    seconds: 0,         // secondi di musica analizzati
+    phaseSeconds: 0,    // secondi nella fase corrente
+    pending: 0,
+    levelSum: 0,
+    levelCount: 0,
+    lastKeyAt: 0,
+    key: null,
+    deepAverage: new DeepAverage(), // profili interni di S-KEY su tutto l'ascoltato
+    skeyUntil: 0,       // fin dove (secondi di musica) i profili sono già contati
+    history: [],
+  };
+}
+
+function rms(samples) {
+  let s = 0;
+  for (const v of samples) s += v * v;
+  return Math.sqrt(s / Math.max(1, samples.length));
+}
+
+function remember(samples) {
+  const { recent } = state;
+  for (const v of samples) {
+    recent[state.recentPos] = v;
+    state.recentPos = (state.recentPos + 1) % recent.length;
+    if (state.recentLength < recent.length) state.recentLength += 1;
+  }
+}
+
+function recentAudio() {
+  const { recent, recentLength, recentPos } = state;
+  const out = new Float32Array(recentLength);
+  const start = (recentPos - recentLength + recent.length) % recent.length;
+  for (let i = 0; i < recentLength; i++) out[i] = recent[(start + i) % recent.length];
+  return out;
+}
+
+function tempoUpdate() {
+  const { rhythm } = state;
+  const candidates = rhythm.seconds >= 4 ? tempoCandidates(rhythm) : null;
+  const choice = chooseTempo(candidates);
+  if (!choice) return null;
+  const beats = rhythm.beats(choice.bpm);
+  const r = beats.length >= 8 ? fitBeats(beats, choice.bpm) : null;
+  const fine = r && r.beats >= 8 && Math.abs(r.bpm / choice.bpm - 1) < 0.04;
+  const bpm = fine ? r.bpm : choice.bpm;
+  state.history.push(bpm);
+  if (state.history.length > 6) state.history.shift();
+  const stable = state.history.length >= 5 && state.history.every((v) => Math.abs(v / bpm - 1) < 0.01);
+  return {
+    bpm,
+    halfWidth: fine ? r.halfWidth : Math.max(1, bpm * 0.02),
+    beats: fine ? r.beats : beats.length,
+    confidence: choice.confidence,
+    stable,
+  };
+}
+
+function keyUpdate() {
+  if (!skey || !keyModel || state.recentLength < 5 * RATE) return state.key;
+  const { chroma } = state;
+  const frames = [];
+  const tuning = needsChroma() ? chroma.tuningCents() : 0;
+  for (const record of needsChroma() ? chroma.frames : []) {
+    if (!record.peaks.length) continue;
+    const c = chroma.frameChroma(record, tuning);
+    const t = fold(c.treble, chroma.cfg.binsPerSemitone);
+    const b = fold(c.bass, chroma.cfg.binsPerSemitone);
+    const tm = Math.max(...t);
+    if (!(tm > 0)) continue;
+    const bm = Math.max(...b);
+    frames.push({ t: t.map((v) => v / tm), b: bm > 0 ? b.map((v) => v / bm) : new Float64Array(12), tonal: record.tonal });
+  }
+  // S-KEY sugli ultimi 30 s. Nei primi 30 s la finestra copre tutto e vale l'ultimo
+  // passaggio; dopo, si aggiungono solo i secondi nuovi, così i profili restano la media su
+  // tutto l'ascoltato (come nell'allenamento, sul brano intero) a costo costante.
+  const audio = recentAudio();
+  const start = state.seconds - audio.length / RATE;
+  const covering = start < 0.01;
+  const run = skey.run(audio, { from: covering ? 0 : state.skeyUntil - start });
+  state.deepAverage.add(run, covering);
+  state.skeyUntil = state.seconds;
+  const blocks = { ...chromaBlocks(frames, { gamma: keyModel.gamma }), ...skeyBlocks({ p: run.p, deep: state.deepAverage.deep }) };
+  const probs = softmax(scoreKeys(standardize(blocks, keyModel.blocks, keyModel.scales), keyModel.weights));
+  const order = probs.map((p, i) => [p, i]).sort((a, b) => b[0] - a[0]);
+  const asKey = (i) => ({ tonic: i % 12, mode: i < 12 ? 'major' : 'minor' });
+  const best = asKey(order[0][1]);
+  const second = asKey(order[1][1]);
+  state.key = {
+    ...best,
+    name: keyName(best),
+    probability: order[0][0],
+    alternative: keyName(second),
+    alternativeKey: second,
+    alternativeProbability: order[1][0],
+  };
+  return state.key;
+}
+
+// Quanto la musica supera il rumore della stanza (dB), se il silenzio è stato misurato.
+function snr() {
+  if (!state.noisePower || state.musicCount < 5 * RATE) return null;
+  const music = state.musicSum / state.musicCount - state.noisePower;
+  return music > 0 ? 10 * Math.log10(music / state.noisePower) : -Infinity;
+}
+
+function post(extra = {}) {
+  const level = state.levelCount ? 10 * Math.log10(state.levelSum / state.levelCount + 1e-12) : -100;
+  state.levelSum = 0;
+  state.levelCount = 0;
+  self.postMessage({ type: 'update', phase: state.phase, phaseSeconds: state.phaseSeconds, seconds: state.seconds, level, snr: snr(), ...extra });
+}
+
+function onSamples(samples) {
+  for (const v of samples) state.levelSum += v * v;
+  state.levelCount += samples.length;
+  state.phaseSeconds += samples.length / RATE;
+
+  if (state.phase === 'calibrating' || state.phase === 'waiting') {
+    state.held.push(samples);
+    state.heldLength += samples.length;
+  }
+  if (state.phase === 'calibrating') {
+    for (const v of samples) state.noiseSum += v * v;
+    state.noiseCount += samples.length;
+    if (state.phaseSeconds >= CALIBRATION_SECONDS) {
+      state.noisePower = Math.max(1e-12, state.noiseSum / state.noiseCount);
+      state.phase = 'waiting';
+      state.phaseSeconds = 0;
+    }
+    return;
+  }
+  if (state.phase === 'waiting') {
+    // La musica è partita quando il livello resta ~10 dB sopra il rumore per mezzo secondo.
+    // Se non succede (la canzone suonava già durante il "silenzio"), si parte comunque.
+    state.loud = rms(samples) > 3 * Math.sqrt(state.noisePower) ? state.loud + samples.length : 0;
+    if (state.loud < RATE / 2 && state.phaseSeconds < WAIT_LIMIT) return;
+    // Partita la musica: si analizza da dove è cominciata. Mai partita: il "silenzio" era
+    // già la canzone, quindi la misura del rumore non vale e si analizza tutto l'ascoltato.
+    const started = state.loud >= RATE / 2;
+    if (!started) state.noisePower = 0;
+    let skip = started ? state.heldLength - state.loud : 0;
+    const held = state.held;
+    state.held = [];
+    state.heldLength = 0;
+    state.phase = 'listening';
+    state.phaseSeconds = 0;
+    for (const chunk of held) {
+      if (skip >= chunk.length) { skip -= chunk.length; continue; }
+      analyze(skip > 0 ? chunk.subarray(skip) : chunk);
+      skip = 0;
+    }
+    return;
+  }
+  analyze(samples);
+}
+
+function analyze(samples) {
+  for (const v of samples) state.musicSum += v * v;
+  state.musicCount += samples.length;
+  state.rhythm.push(samples);
+  if (!keyModel || needsChroma()) state.chroma.push(samples);
+  remember(samples);
+  state.seconds += samples.length / RATE;
+}
+
+self.onmessage = async ({ data }) => {
+  if (data.type === 'start') {
+    start(data);
+    loadAssets().catch((error) => self.postMessage({ type: 'error', message: String(error) }));
+    return;
+  }
+  if (data.type === 'skip-calibration' && state) {
+    // La canzone stava già suonando: niente misura del rumore, e quello ascoltato finora
+    // (era già la canzone) entra nell'analisi.
+    const held = state.phase === 'listening' ? [] : state.held;
+    state.phase = 'listening';
+    state.phaseSeconds = 0;
+    state.noisePower = 0;
+    state.held = [];
+    state.heldLength = 0;
+    for (const chunk of held) analyze(chunk);
+    return;
+  }
+  if (data.type !== 'pcm' || !state) return;
+  const samples = Float32Array.from(state.resampler.process(data.samples));
+  onSamples(samples);
+  state.pending += samples.length;
+  if (state.pending < RATE) return;
+  state.pending -= RATE;
+  if (state.phase !== 'listening') { post(); return; }
+  const tempo = tempoUpdate();
+  let key = state.key;
+  if (state.seconds - state.lastKeyAt >= KEY_EVERY || (!key && state.seconds >= 6)) {
+    state.lastKeyAt = state.seconds;
+    key = keyUpdate();
+  }
+  post({ tempo, key });
+};

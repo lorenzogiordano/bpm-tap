@@ -2,6 +2,8 @@
 
 Web app installabile (PWA) per misurare i BPM di una canzone battendo **sul retro dell'iPhone**, letto dall'accelerometro, oppure sullo schermo. Più tap fai, più il valore è preciso; quando smetti, la misura si salva da sola.
 
+La modalità **Ascolta** ricava BPM e **tonalità** direttamente dalla canzone, dal microfono.
+
 Nessuna dipendenza, nessun passaggio di build: sono file statici.
 
 ## Uso
@@ -16,6 +18,17 @@ Se usi **Tocco posteriore** (Impostazioni › Accessibilità › Tocco), disatti
 - **÷2 / ×2** correggono il classico errore di metà o doppio tempo. Valgono anche sulla misura appena salvata.
 - La modalità **Schermo** usa un'area grande dello schermo. Su computer funzionano anche Spazio o Invio, ed Esc per ricominciare.
 - Il pannello **Sensore** (icona in alto a destra) mostra il segnale dal vivo e la soglia, e permette di regolare la sensibilità. **Esporta dati del sensore** salva gli ultimi 20 s di dati grezzi (JSON): servono per tarare il rilevamento su un iPhone reale.
+
+### Modalità Ascolta
+
+1. Fai suonare la canzone da **un altro dispositivo** (cassa, computer, radio). Quando l'app accende il microfono, iOS mette in pausa la musica che suona sullo stesso iPhone. Scollega le cuffie Bluetooth, altrimenti il microfono diventa il loro.
+2. **Tieni il telefono vicino alla cassa**, a 30–50 cm. È la cosa che conta di più: nelle prove la tonalità giusta sale dal 60% al 67% dei brani su GTZAN e dal 53% al 58% su GiantSteps (vedi sotto).
+3. Tocca **Inizia ad ascoltare**. Se puoi, lascia **3 secondi di silenzio**: l'app misura il rumore della stanza, aspetta che parta la canzone (così quello che c'era prima non entra nell'analisi) e ti avvisa se il rumore copre la musica. Se la canzone sta già suonando, tocca **La canzone è già partita**.
+4. BPM e tonalità compaiono dopo pochi secondi e si affinano ascoltando. Accanto alla tonalità c'è quanto è affidabile:
+   - **sicura**: giusta circa 9 volte su 10;
+   - **probabile**: circa 2 volte su 3;
+   - **incerta**: con l'alternativa più vicina.
+5. Tocca **Ferma e salva**. Poi puoi **verificare a orecchio**: l'app suona l'accordo di "casa" della tonalità trovata e dell'alternativa, e tu scegli quella che suona giusta sopra la canzone. Tra le prime due la tonalità giusta c'è in circa 3 casi su 4.
 
 ## Installazione su iPhone
 
@@ -62,6 +75,57 @@ Poi in Safari: Condividi › **Aggiungi alla schermata Home** (su iOS 26 lascia 
 - **Limiti noti.** A 60 Hz un colpo molto secco (< 15 ms) può cadere tra due campioni senza lasciare traccia. Con la forza minima di default, nel caso peggiore simulato se ne prende circa metà; alzando la sensibilità di più. I tap persi non spostano i BPM, perché la stima gestisce i battiti saltati. L'errore di temporizzazione dovuto al campionamento (4–8 ms) è inferiore allo scarto umano (15–25 ms a 120 BPM).
 - Le soglie sono tarate su un segnale simulato. **Vanno verificate su un iPhone reale** con il pannello Sensore e l'export dei dati.
 
+### Dall'audio a BPM e tonalità (modalità Ascolta)
+
+Il microfono si apre senza cancellazione dell'eco, riduzione del rumore e controllo automatico del volume, che deformerebbero la musica. Un AudioWorklet passa i campioni a un Worker ([audio/listen-worker.js](audio/listen-worker.js)), che li porta a 22050 Hz e fa tutta l'analisi fuori dal thread dell'interfaccia.
+
+**Tempo** ([audio/rhythm.js](audio/rhythm.js), [audio/tempo-choice.js](audio/tempo-choice.js))
+
+1. Curva degli attacchi: flusso spettrale su 40 bande mel in scala logaritmica, più tre curve per bande (basso, medio, acuto).
+2. Autocorrelazione generalizzata con compressione 0,5 (Percival & Tzanetakis 2014) su finestre di 8 s, rafforzata con le armoniche del periodo.
+3. Candidati: i picchi migliori e i loro multipli (×2, ½, 3/2, 2/3, ×3, ⅓). Un modello lineare sceglie tra loro in base a 21 indizi (forza del periodo e dei suoi multipli, per banda; densità degli attacchi; posizione rispetto ai 120 BPM). È allenato su GTZAN e GiantSteps Tempo, audio pulito e ripreso in una stanza simulata.
+4. Battiti con la programmazione dinamica di Ellis (2007), poi la stessa regressione dei tap: da qui il margine ±.
+
+Risultati in validazione incrociata (tempo giusto entro il 4%; tra parentesi contando anche metà, doppio e triplo):
+
+| | GTZAN | GiantSteps Tempo |
+|---|---|---|
+| audio pulito | 71% (92%) | 82% (93%) |
+| dal microfono, stanza simulata | 70% (90%) | 80% (92%) |
+| preferenza fissa per i 120 BPM (partenza) | 68% (91%) | — |
+
+**Tonalità** ([audio/skey.js](audio/skey.js), [audio/onnx-lite.js](audio/onnx-lite.js), [audio/key-features.js](audio/key-features.js))
+
+1. [S-KEY](https://github.com/deezer/skey) (Kong et al., ICASSP 2025, Deezer, licenza MIT) è una rete che stima la tonalità ed è stata allenata senza etichette. Gira nel telefono con un piccolo interprete ONNX in JavaScript, scritto per questa app: verificato contro onnxruntime, differenza massima circa 1e-6. Il grafo pesa 405 KB ([licenza](audio/SKEY-LICENSE)) e l'analisi di 30 s di audio richiede circa 2 s su un Mac.
+2. Non si usa la risposta finale di S-KEY, ma i suoi **strati interni** (blocchi 4, 5 e 6): per ogni canale, un profilo sulle 12 note, mediato sulle ottave e nel tempo. Un modello lineare legge questi profili con gli stessi pesi per tutte le 12 toniche (trasporre la canzone sposta solo la risposta). È allenato su GTZAN, GiantSteps Key, GiantSteps MTG Key e FMAK, audio pulito e da stanza simulata: 16 556 esempi.
+3. S-KEY guarda gli ultimi 30 s e si ripete ogni 8 s. Nei primi 30 s vale l'ultimo passaggio, che vede tutto l'ascoltato. Dopo, ogni passaggio aggiunge ai profili solo i secondi nuovi. Così i profili restano la media su tutto l'ascolto, come nell'allenamento, e il costo non cresce. In una prova in scala (finestre da 10 s su brani da 30 s, dal microfono) questo dà 58,8% su GTZAN e 52,3% su GiantSteps, contro 59,5% e 52,6% di S-KEY su tutto l'audio. Tenere solo l'ultima finestra darebbe 52,4% e 46,9%.
+
+Prova "a raccolta esclusa": il modello è allenato senza la raccolta su cui viene provato, quindi non ha mai visto né quei brani né quello stile di annotazione. I brani sono estratti da 30 s.
+
+| Tonalità esatta (MIREX pesato) | GTZAN | GiantSteps Key |
+|---|---|---|
+| audio pulito | **70%** (77%) | **63%** (70%) |
+| dal microfono, stanza simulata | **60%** (69%) | **53%** (62%) |
+| dal microfono, telefono vicino alla cassa | **67%** (74%) | **58%** (66%) |
+| giusta tra le prime due (microfono) | 76% | 68% |
+| S-KEY da solo, pulito / microfono | 66% / 50% | 60% / 48% |
+| profili classici (Krumhansl, Temperley…), pulito | 54–61% | 48–50% |
+| [Essentia](https://essentia.upf.edu/) KeyExtractor (profilo bgate, 200 brani), pulito | 59% | 55% |
+
+Il punteggio MIREX dà mezzo punto alla quinta, 0,3 alla relativa e 0,2 alla parallela. Il margine d'errore di ogni cifra è di circa ±3–4 punti (95%).
+
+Quanto è affidabile la risposta (dal microfono, brani mai visti): con probabilità ≥ 0,8 è giusta nell'82–95% dei casi (13–16% dei brani); tra 0,5 e 0,8 circa 2 volte su 3; sotto 0,5 una volta su 3 o su 2. Da qui "sicura", "probabile" e "incerta".
+
+**Cosa non ha aiutato** (misurato, poi tolto):
+
+- **Pulire il rumore** col profilo del silenzio iniziale (sottrazione spettrale), o senza silenzio (statistiche dei minimi, Martin 2001), anche spegnendo del tutto le righe del ronzio elettrico: da 0,5 a 2,5 punti in meno sulla tonalità, niente sul tempo, con ogni tipo di rumore. S-KEY regge già il rumore costante e il filtro aggiunge artefatti. Il silenzio iniziale serve quindi a capire quando parte la canzone e a stimare quanto la musica supera il rumore (sotto 10 dB compare l'avviso di avvicinarsi).
+- **Cromagrammi** (NNLS di Mauch & Dixon, accordi, basso) accanto a S-KEY: meno di un punto.
+- **Media semplice dei passaggi** di S-KEY: 1–4 punti in meno dell'ultimo passaggio nei primi 30 s.
+
+La perdita dal microfono viene soprattutto dall'eco della stanza e dalle casse piccole, che tolgono i bassi; il rumore pesa meno. Per questo avvicinarsi alla cassa recupera tra metà e il 70% della differenza.
+
+**Limiti.** Le prove usano estratti da 30 s e una stanza simulata, non registrazioni con un iPhone vero. Brani con cambi di tonalità, modali o senza un centro tonale chiaro non hanno una risposta giusta sola. Per questo c'è la verifica a orecchio.
+
 ### Piattaforma iOS
 
 | Aspetto | Comportamento |
@@ -78,7 +142,7 @@ Poi in Safari: Condividi › **Aggiungi alla schermata Home** (su iOS 26 lascia 
 npm test
 ```
 
-Ci sono 28 test (Node, nessuna dipendenza):
+Ci sono 43 test (Node, nessuna dipendenza):
 
 - precisione che cresce come n^-1,5;
 - regressione più precisa della media degli intervalli;
@@ -89,15 +153,21 @@ Ci sono 28 test (Node, nessuna dipendenza):
   - colpi in istanti qualsiasi tra due campioni;
   - scossoni in ogni direzione, urti, colpi sul fianco, tocchi leggeri;
   - movimento lento della mano, caso peggiore, sensibilità;
-- sessione completa a 60 BPM con tocchi leggeri e uno scossone in mezzo.
+- sessione completa a 60 BPM con tocchi leggeri e uno scossone in mezzo;
+- ascolto: FFT, framing e ricampionamento; BPM dai battiti con salti di fase e copertura del margine; interprete ONNX contro il calcolo diretto; indizi della tonalità che si spostano con la trasposizione; media dei profili di S-KEY su finestre sovrapposte; catena completa (S-KEY + modello) su cadenze in Do maggiore, La minore e Mi♭ maggiore.
+
+Il banco di prova con i dataset, le stanze simulate e gli script che hanno prodotto i numeri qui sopra è in [lab/](lab/README.md).
 
 ## Struttura
 
 | File | Contenuto |
 |---|---|
 | [index.html](index.html), [styles.css](styles.css) | interfaccia |
-| [app.js](app.js) | sessioni, sensore, storico, pannello del sensore |
-| [tempo.js](tempo.js) | stima dei BPM (pura, testabile) |
+| [app.js](app.js) | sessioni, sensore, ascolto, storico, pannello del sensore |
+| [tempo.js](tempo.js) | stima dei BPM dai tap (pura, testabile) |
 | [detector.js](detector.js) | rilevamento dei tap dall'accelerometro (puro, testabile) |
+| [listen.js](listen.js) | microfono, AudioWorklet e Worker dell'ascolto |
+| [audio/](audio/) | analisi dell'audio: tempo, S-KEY, interprete ONNX, modello della tonalità |
 | [sw.js](sw.js), [manifest.webmanifest](manifest.webmanifest), [icons/](icons/) | PWA |
 | [test/](test/) | test |
+| [lab/](lab/README.md) | banco di prova (non serve all'app) |

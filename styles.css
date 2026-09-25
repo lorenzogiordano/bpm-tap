@@ -475,3 +475,82 @@ button { font: inherit; color: inherit; }
 @media (prefers-reduced-motion: reduce) {
   .quality-fill, .timer-arc, .bpm { transition: none; }
 }
+
+/* ---------- Ascolto ---------- */
+
+.seg-btn { padding: 8px 12px; }
+
+.key-line {
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  margin-top: 10px;
+}
+
+.key-line[hidden] { display: none; }
+
+.key-name {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.key-alt {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.key-alt:empty { display: none; }
+
+.listen-controls {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  width: min(100%, 300px);
+}
+
+.listen-controls[hidden] { display: none; }
+
+.level {
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.level-fill {
+  width: 100%;
+  height: 100%;
+  background: var(--muted);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 0.15s linear;
+}
+
+.pad[data-listening="true"] .level-fill { background: var(--ok); }
+
+.history-key {
+  grid-column: 1 / -1;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.key-check {
+  display: grid;
+  gap: 10px;
+  width: min(100%, 320px);
+  text-align: center;
+}
+
+.key-check[hidden] { display: none; }
+
+.key-check-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.key-check .btn[aria-pressed="true"] { border-color: var(--ok); color: var(--ok); }
+
+.key-confidence { font-size: 13px; color: var(--muted); }

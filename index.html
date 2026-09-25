@@ -9,7 +9,7 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="BPM Tap">
-  <meta name="description" content="Misura i BPM di una canzone battendo sul retro dell'iPhone o sullo schermo.">
+  <meta name="description" content="Misura i BPM di una canzone battendo sul retro dell'iPhone, sullo schermo, o ascoltandola dal microfono.">
   <link rel="apple-touch-icon" href="icons/icon-180.png">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="manifest" href="manifest.webmanifest">
@@ -22,6 +22,7 @@
       <div class="seg" role="group" aria-label="Modalità di input">
         <button type="button" class="seg-btn" data-mode="back" aria-pressed="true">Retro</button>
         <button type="button" class="seg-btn" data-mode="screen" aria-pressed="false">Schermo</button>
+        <button type="button" class="seg-btn" data-mode="listen" aria-pressed="false">Ascolta</button>
       </div>
       <button type="button" id="sensorToggle" class="icon-btn" aria-label="Mostra il segnale del sensore" aria-expanded="false">
         <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M2 12h4l2-6 4 13 3-9 2 2h5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -42,6 +43,10 @@
             <span id="plusMinus" class="plusminus"></span>
             <span id="tapCount" class="taps"></span>
           </div>
+          <div id="keyLine" class="key-line" hidden>
+            <span id="keyName" class="key-name"></span>
+            <span id="keyAlt" class="key-alt"></span>
+          </div>
         </div>
       </div>
 
@@ -51,6 +56,22 @@
       </div>
 
       <p id="status" class="status"></p>
+
+      <div id="listenControls" class="listen-controls" hidden>
+        <div class="level" aria-hidden="true"><div id="levelFill" class="level-fill"></div></div>
+        <button type="button" id="listenBtn" class="btn btn-primary">Inizia ad ascoltare</button>
+        <button type="button" id="skipCalibration" class="link-btn" hidden>La canzone è già partita</button>
+        <p id="listenError" class="error" hidden></p>
+      </div>
+
+      <div id="keyCheck" class="key-check" hidden>
+        <p class="hint">Non sei sicuro della tonalità? Ascolta l'accordo di "casa" di ciascuna sopra la canzone e scegli quello che suona giusto.</p>
+        <div class="key-check-row">
+          <button type="button" class="btn" data-check="0"></button>
+          <button type="button" class="btn" data-check="1"></button>
+        </div>
+        <p id="keyCheckStatus" class="hint"></p>
+      </div>
     </section>
 
     <div class="actions">
@@ -81,7 +102,7 @@
         <button type="button" id="clearHistory" class="link-btn" hidden>Cancella tutto</button>
       </div>
       <ul id="historyList" class="history-list"></ul>
-      <p id="historyEmpty" class="hint">Quando smetti di battere, la misura si salva qui da sola.</p>
+      <p id="historyEmpty" class="hint">Le misure si salvano qui da sole, quando smetti di battere o fermi l'ascolto.</p>
     </section>
   </main>
 
@@ -96,6 +117,7 @@
       <p class="hint">Se hai attivo <em>Tocco posteriore</em> (Impostazioni › Accessibilità › Tocco), disattivalo: i doppi tap aprirebbero la sua azione.</p>
       <button type="button" id="enableSensor" class="btn btn-primary">Attiva il sensore</button>
       <button type="button" id="useScreen" class="link-btn">Usa lo schermo</button>
+      <button type="button" id="useListen" class="link-btn">Ascolta una canzone (BPM e tonalità)</button>
       <p id="sensorError" class="error" hidden></p>
     </div>
   </div>
