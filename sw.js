@@ -1,8 +1,8 @@
 // Service worker: rende l'app disponibile offline.
-// Strategia: precache dei file dell'app, poi stale-while-revalidate
-// (risponde subito dalla cache e aggiorna in background).
-// Aumenta VERSION a ogni rilascio per forzare il refresh della cache.
-const VERSION = 'bpm-tap-v1';
+// Strategia: precache dei file dell'app, poi "prima la rete": online si usa
+// sempre l'ultima versione pubblicata (e si aggiorna la cache), offline la cache.
+// Aumenta VERSION a ogni rilascio per ripulire le cache vecchie.
+const VERSION = 'bpm-tap-v2';
 
 const ASSETS = [
   './',
@@ -37,15 +37,14 @@ self.addEventListener('fetch', (event) => {
   if (request.method !== 'GET' || new URL(request.url).origin !== self.location.origin) return;
 
   event.respondWith(
-    caches.open(VERSION).then(async (cache) => {
-      const cached = await cache.match(request, { ignoreSearch: true });
-      const network = fetch(request)
-        .then((response) => {
-          if (response.ok) cache.put(request, response.clone());
-          return response;
-        })
-        .catch(() => cached);
-      return cached || network;
-    })
+    fetch(request, { cache: 'no-cache' })
+      .then((response) => {
+        if (response.ok) {
+          const copy = response.clone();
+          caches.open(VERSION).then((cache) => cache.put(request, copy));
+        }
+        return response;
+      })
+      .catch(() => caches.match(request, { ignoreSearch: true }))
   );
 });

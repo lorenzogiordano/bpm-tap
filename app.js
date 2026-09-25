@@ -1,5 +1,5 @@
 import { TempoEstimator, DEFAULTS, formatBpm, formatHalfWidth, quality } from './tempo.js';
-import { TapDetector } from './detector.js';
+import { TapDetector, REJECT_REASONS } from './detector.js';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -23,6 +23,7 @@ const els = {
   scope: $('scope'),
   sensitivity: $('sensitivity'),
   sensitivityOut: $('sensitivityOut'),
+  lastHit: $('lastHit'),
   exportData: $('exportData'),
   historyList: $('historyList'),
   historyEmpty: $('historyEmpty'),
@@ -45,7 +46,7 @@ const EXPORT_SAMPLES = 1200; // ~20 s a 60 Hz
 const KEYS = {
   history: 'bpmtap.history',
   mode: 'bpmtap.mode',
-  sensitivity: 'bpmtap.sensitivity',
+  sensitivity: 'bpmtap.sensitivity.v2',
   onboarded: 'bpmtap.onboarded',
 };
 
@@ -85,7 +86,7 @@ const state = {
 };
 
 const estimator = new TempoEstimator();
-const detector = new TapDetector({ sensitivity: store.get(KEYS.sensitivity, 6) });
+const detector = new TapDetector({ sensitivity: store.get(KEYS.sensitivity, 5) });
 let endTimer = null;
 
 // I timestamp degli eventi sono sulla stessa scala di performance.now();
@@ -105,37 +106,26 @@ function beginSession(source) {
   });
 }
 
-function onTap(time, source, assisted = false) {
+function onTap(time, source) {
   if (state.phase === 'tapping' && estimator.isExpired(time)) finalize();
   if (state.phase !== 'tapping') beginSession(source);
 
   const { status } = estimator.addTap(time);
   flash(status !== 'rejected');
-  if (status !== 'rejected') scheduleEnd();
-  if (source === 'back') armExpectation(time, assisted);
+  scheduleEnd();
   render();
   ensureLoop();
 }
 
-// Dice al rilevatore dove cadrà il prossimo battito, così un colpo debole lì
-// vicino viene preso lo stesso. Un tap "aiutato" non ne arma un altro aiutato:
-// se smetti di battere, la sessione non va avanti da sola.
-function armExpectation(time, assisted) {
-  const next = estimator.count >= 3 ? estimator.nextBeat(time) : null;
-  if (next) detector.expect(next.time, next.halfWidth, !assisted);
-  else detector.expect(null);
-}
-
 function scheduleEnd() {
   clearTimeout(endTimer);
-  const remaining = estimator.lastTime + estimator.timeoutMs() - performance.now();
+  const remaining = estimator.lastActivity + estimator.timeoutMs() - performance.now();
   endTimer = setTimeout(finalize, Math.max(0, remaining) + 30);
 }
 
 // Fine della sessione: il valore resta a schermo e, se valido, si salva.
 function finalize() {
   clearTimeout(endTimer);
-  detector.expect(null);
   if (state.phase !== 'tapping') return;
   const result = estimator.result();
   state.phase = 'locked';
@@ -279,7 +269,7 @@ function frame() {
 function updateTimerRing() {
   const period = estimator.currentPeriod();
   if (period === null) return;
-  const elapsed = performance.now() - estimator.lastTime;
+  const elapsed = performance.now() - estimator.lastActivity;
   const timeout = estimator.timeoutMs();
   const progress = Math.min(1, Math.max(0, (elapsed - period) / (timeout - period)));
   els.timerArc.style.strokeDashoffset = String(1 - progress);
@@ -303,29 +293,46 @@ function onMotion(event) {
   const useGravity = !a || a.z == null || (a.x === 0 && a.y === 0 && a.z === 0);
   const src = useGravity ? g : a;
   if (!src || src.z == null) return;
+  const r = event.rotationRate;
+  const rot = r && r.alpha != null ? Math.hypot(r.alpha, r.beta, r.gamma) : null;
 
   motion.count += 1;
   motion.times.push(t);
   if (motion.times.length > 61) motion.times.shift();
 
-  const tap = detector.push(t, src.z);
-  const accepted = tap !== null && state.mode === 'back' && t - state.lastTouch > TOUCH_GUARD_MS;
-
-  motion.scope.push({ s: detector.score, thr: detector.threshold, tap: false });
+  const hit = detector.push(t, src.x ?? 0, src.y ?? 0, src.z, rot);
+  motion.scope.push({ s: detector.score, thr: detector.threshold, mark: null });
   if (motion.scope.length > SCOPE_SAMPLES) motion.scope.shift();
-  // Il tap si conferma qualche campione dopo il picco: il segno va sul campione giusto.
-  if (accepted) {
-    const back = Math.round((t - tap.time) / (1000 / 60));
-    const mark = motion.scope[Math.max(0, motion.scope.length - 1 - back)];
-    mark.tap = true;
+
+  let tap = null;
+  if (hit && state.mode === 'back') {
+    const touched = t - state.lastTouch <= TOUCH_GUARD_MS;
+    const ok = hit.ok && !touched;
+    if (ok) tap = hit.time;
+    // L'esito arriva qualche campione dopo il picco: il segno va sul campione giusto.
+    const back = Math.round((t - hit.time) / (1000 / 60));
+    motion.scope[Math.max(0, motion.scope.length - 1 - back)].mark = ok ? 'tap' : 'rejected';
+    showLastHit(hit, touched);
   }
 
-  const r = event.rotationRate || {};
-  motion.raw.push([t, src.x, src.y, src.z, r.alpha, r.beta, r.gamma, accepted ? tap.time : null]
-    .map((v) => (typeof v === 'number' ? Math.round(v * 10000) / 10000 : v)));
+  motion.raw.push([t, src.x, src.y, src.z, r?.alpha, r?.beta, r?.gamma, tap]
+    .map((v) => (typeof v === 'number' ? Math.round(v * 10000) / 10000 : v ?? null)));
   if (motion.raw.length > EXPORT_SAMPLES) motion.raw.shift();
 
-  if (accepted) onTap(tap.time, 'back', tap.assisted);
+  if (tap !== null) onTap(tap, 'back');
+}
+
+// Nel pannello del sensore: forza dell'ultimo colpo e, se scartato, il perché.
+function showLastHit(hit, touched) {
+  if (els.sensorPanel.hidden) return;
+  const strength = hit.strength.toFixed(2);
+  const threshold = detector.threshold.toFixed(2);
+  if (hit.ok && !touched) {
+    els.lastHit.textContent = `Ultimo colpo: forza ${strength} (soglia ${threshold})`;
+  } else {
+    const why = touched ? 'stavi toccando lo schermo' : REJECT_REASONS[hit.reason];
+    els.lastHit.textContent = `Scartato (forza ${strength}): ${why}`;
+  }
 }
 
 function waitForMotion(timeoutMs) {
@@ -554,10 +561,11 @@ function drawScope() {
   ctx.stroke();
   ctx.setLineDash([]);
 
-  ctx.strokeStyle = styles.getPropertyValue('--accent');
   ctx.lineWidth = 2 * dpr;
+  const colors = { tap: styles.getPropertyValue('--accent'), rejected: styles.getPropertyValue('--faint') };
   data.forEach((d, i) => {
-    if (!d.tap) return;
+    if (!d.mark) return;
+    ctx.strokeStyle = colors[d.mark];
     ctx.beginPath();
     ctx.moveTo(x(i + offset), 0);
     ctx.lineTo(x(i + offset), height);

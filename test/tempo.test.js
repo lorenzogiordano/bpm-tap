@@ -77,27 +77,56 @@ test('un battito saltato non falsa la stima', () => {
   assert.equal(result.beats, 10);
 });
 
-test('secondo tap perso: la stima non resta bloccata a metà tempo', () => {
+test('secondo tap perso: la misura si riallinea e non resta a metà tempo', () => {
   // Manca il tap a 1500: il primo intervallo vale due battiti.
   const times = [1000, 2000, 2500, 3000, 3500, 4000, 4500, 5000];
   const { result, statuses } = run(times);
   assert.ok(Math.abs(result.bpm - 120) < 1e-9, `${result.bpm} (${statuses.join()})`);
-  assert.equal(result.taps, 8);
+  assert.ok(result.taps >= 6);
 });
 
-test('un tap perso già al terzo tap viene assorbito senza ripartire', () => {
-  const times = [1000, 1500, /* perso */ 2500, 3000, 3500, 4000];
+test('tap perso a inizio misura: si riallinea da solo in pochi tap', () => {
+  const times = [1000, 1500, /* perso */ 2500, 3000, 3500, 4000, 4500];
+  const { result } = run(times);
+  assert.ok(Math.abs(result.bpm - 120) < 1e-9, String(result.bpm));
+});
+
+test('a griglia solida un tap perso viene assorbito', () => {
+  const times = [1000, 1500, 2000, 2500, /* perso */ 3500, 4000];
   const { result, statuses } = run(times);
-  assert.ok(!statuses.slice(1).includes('start') && !statuses.includes('restart'), statuses.join());
-  assert.ok(Math.abs(result.bpm - 120) < 1e-9);
+  assert.ok(!statuses.includes('restart'), statuses.join());
+  assert.equal(result.taps, 6);
+  assert.equal(result.beats, 7);
 });
 
-test('previsione del prossimo battito, anche dopo battiti saltati', () => {
-  const est = new TempoEstimator();
-  [1000, 1500, 2000, 2500].forEach((t) => est.addTap(t));
-  assert.ok(Math.abs(est.nextBeat().time - 3000) < 1e-6);
-  assert.ok(Math.abs(est.nextBeat(3600).time - 4000) < 1e-6);
-  assert.ok(est.nextBeat().halfWidth >= 60 && est.nextBeat().halfWidth <= 150);
+// Contano solo i tempi qui: la difesa principale dai colpi falsi è il rilevatore
+// (forza, forma, direzione). A misura avviata la griglia non si infittisce mai.
+test('a misura avviata, colpi falsi a metà battito non raddoppiano mai il tempo (60 → 120)', () => {
+  const random = rng(4);
+  for (let trial = 0; trial < 60; trial++) {
+    const real = humanTaps({ bpm: 60, n: 20, jitterMs: 20, random });
+    const fake = real.slice(3, -1).filter(() => random.uniform() < 0.5).map((t) => t + 500 + 30 * random.gauss());
+    const { result } = run([...real, ...fake].sort((a, b) => a - b));
+    assert.ok(Math.abs(result.bpm - 60) < 2, `prova ${trial}: ${result.bpm.toFixed(1)} BPM`);
+    assert.ok(result.taps >= 16, `prova ${trial}: ${result.taps} tap`);
+  }
+});
+
+test('colpi falsi sporadici, anche all\'inizio: la misura finisce sul tempo giusto', () => {
+  const random = rng(5);
+  for (let trial = 0; trial < 60; trial++) {
+    const real = humanTaps({ bpm: 60, n: 24, jitterMs: 20, random });
+    const fake = real.slice(0, -1).filter(() => random.uniform() < 0.15).map((t) => t + 500 + 30 * random.gauss());
+    const { result } = run([...real, ...fake].sort((a, b) => a - b));
+    assert.ok(Math.abs(result.bpm - 60) < 2, `prova ${trial}: ${result.bpm.toFixed(1)} BPM`);
+  }
+});
+
+test('se la griglia nasce troppo fitta per colpi falsi iniziali, si allarga da sola', () => {
+  // Colpi falsi esattamente a metà nei primi due battiti, poi solo colpi veri a 60 BPM.
+  const times = [0, 500, 1000, 1500, 2000, 3000, 4000, 5000, 6000, 7000, 8000].map((t) => t + 1000);
+  const { result } = run(times);
+  assert.ok(Math.abs(result.bpm - 60) < 1e-9, String(result.bpm));
 });
 
 test('i doppi tap (echi) vengono scartati', () => {

@@ -67,10 +67,11 @@
       <canvas id="scope" class="scope" height="96"></canvas>
       <label class="slider">
         <span>Sensibilità</span>
-        <input id="sensitivity" type="range" min="1" max="10" step="1" value="6">
-        <output id="sensitivityOut" for="sensitivity">6</output>
+        <input id="sensitivity" type="range" min="1" max="10" step="1" value="5">
+        <output id="sensitivityOut" for="sensitivity">5</output>
       </label>
-      <p class="hint">Le linee arancioni sono i tap riconosciuti, la linea tratteggiata è la soglia. Se i tap non vengono presi, alza la sensibilità; se ne compaiono di falsi, abbassala.</p>
+      <p id="lastHit" class="hint last-hit">Batti sul retro per vedere la forza dei colpi.</p>
+      <p class="hint">Linee arancioni: colpi contati. Linee grigie: colpi scartati (movimento o scossone, colpo non sul retro, tocco troppo leggero). Linea tratteggiata: soglia. Più bassa è la sensibilità, più forti devono essere i colpi.</p>
       <button type="button" id="exportData" class="link-btn">Esporta dati del sensore (ultimi 20 s)</button>
     </section>
 

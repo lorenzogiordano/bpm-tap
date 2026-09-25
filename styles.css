@@ -341,6 +341,12 @@ button { font: inherit; color: inherit; }
 }
 
 .slider input { width: 100%; accent-color: var(--accent); }
+
+.last-hit {
+  margin-bottom: 8px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
 .slider output { font-variant-numeric: tabular-nums; text-align: right; color: var(--muted); }
 
 /* ---------- Storico ---------- */

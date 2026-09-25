@@ -14,6 +14,13 @@
 //   stesso modo intervalli di 1.75–2.75 periodi);
 // - i tap lontani dalla griglia vengono scartati; se più tap consecutivi sono
 //   fuori griglia ma coerenti tra loro, il tempo è cambiato e si riparte;
+// - con un solo intervallo alle spalle, un tap fuori griglia fa ripartire la
+//   misura dagli ultimi due tap: se si perde il secondo tap la griglia
+//   nascerebbe a metà tempo, e così si riallinea da sola;
+// - un colpo falso a metà battito non deve mai raddoppiare il tempo: la griglia
+//   non si infittisce mai da sola. Si allarga solo se gli ultimi tap saltano
+//   con regolarità un battito sì e uno no (griglia nata troppo fitta per colpa
+//   di colpi falsi all'inizio): lo possono causare solo colpi mancanti, non in più;
 // - la sessione finisce dopo una pausa (2–3 s nelle app esistenti).
 
 export const DEFAULTS = {
@@ -33,12 +40,10 @@ export const DEFAULTS = {
   maxTolerance: 0.4,
   // Quanto devono essere regolari tra loro i tap scartati per dire "è cambiato il tempo".
   changeTolerance: 0.25,
-  // Distanza massima, in battiti, tra due tap consecutivi (1 = nessun battito
-  // saltato). Un tap perso è più probabile di un tap in più, quindi se ne
-  // accetta uno già dal terzo tap; con la griglia solida anche di più.
-  earlyMaxGap: 2,
+  // Battiti saltati (tap persi) accettati solo con la griglia solida, cioè dopo
+  // minTapsForSkip tap coerenti; al massimo maxGap − 1 battiti di fila.
+  minTapsForSkip: 4,
   maxGap: 4,
-  minTapsForLongGaps: 5,
   // Tap fuori griglia consecutivi (e coerenti tra loro) che indicano un cambio di tempo.
   changeAfter: 3,
   // Tap minimi perché la misura sia considerata valida (Mixxx: 4).
@@ -63,8 +68,8 @@ export class TempoEstimator {
     this.origin = 0;       // tempo assoluto del primo tap: i tempi interni sono relativi
     this.taps = [];        // { t, k }: tempo relativo (ms) e indice del battito
     this.streak = [];      // tempi assoluti dei tap scartati consecutivi
-    this.offGrid = [];     // tempi relativi dei tap scartati perché fuori griglia
     this.lastTime = null;  // tempo assoluto dell'ultimo tap accettato
+    this.lastActivity = null; // ultimo tap di qualsiasi esito (tranne gli echi): la sessione è viva
     this.fitCache = null;
   }
 
@@ -85,7 +90,7 @@ export class TempoEstimator {
   }
 
   isExpired(now) {
-    return this.lastTime === null || now - this.lastTime > this.timeoutMs();
+    return this.lastActivity === null || now - this.lastActivity > this.timeoutMs();
   }
 
   // Registra un tap al tempo `time` (ms). Restituisce cosa è successo:
@@ -111,20 +116,31 @@ export class TempoEstimator {
     }
 
     const f = this.fit();
-    const k = Math.round((t - f.intercept) / f.period);
-    const gap = k - last.k;
-    if (gap < 1) return this.reject(time, 'too-close');
+    const dt = t - last.t;
+    // Echi e rimbalzi: troppo vicini al tap precedente per essere un battito.
+    if (dt < Math.max(this.minPeriod, 0.3 * f.period)) return this.reject(time, 'too-close');
 
-    const maxGap = this.taps.length >= this.cfg.minTapsForLongGaps ? this.cfg.maxGap : this.cfg.earlyMaxGap;
+    const k = Math.max(last.k + 1, Math.round((t - f.intercept) / f.period));
+    const gap = k - last.k;
+    const maxGap = this.taps.length >= this.cfg.minTapsForSkip ? this.cfg.maxGap : 1;
     const residual = t - (f.intercept + f.period * k);
     const { toleranceSigmas, minTolerance, maxTolerance } = this.cfg;
     const allowed = f.period * Math.min(maxTolerance,
       Math.max(minTolerance, toleranceSigmas * this.predictionError(f, k) / f.period));
 
-    if (gap > maxGap || Math.abs(residual) > allowed) return this.reject(time, 'off-grid');
+    if (gap <= maxGap && Math.abs(residual) <= allowed) {
+      this.accept(t, k, time);
+      if (this.widenGrid()) return { status: 'accepted', reason: 'wider-grid' };
+      return { status: 'accepted' };
+    }
 
-    this.accept(t, k, time);
-    return { status: 'accepted' };
+    // Un solo intervallo alle spalle: meglio ripartire dagli ultimi due tap che
+    // restare agganciati a una griglia sbagliata (es. secondo tap perso → metà tempo).
+    if (this.taps.length === 2 && dt <= this.maxPeriod) {
+      this.startAt([this.lastTime, time]);
+      return { status: 'restart', reason: 'early' };
+    }
+    return this.reject(time, 'off-grid');
   }
 
   startAt(times) {
@@ -132,11 +148,13 @@ export class TempoEstimator {
     this.origin = times[0];
     times.forEach((time, i) => this.taps.push({ t: time - this.origin, k: i }));
     this.lastTime = times[times.length - 1];
+    this.lastActivity = this.lastTime;
   }
 
   accept(t, k, time) {
     this.taps.push({ t, k });
     this.lastTime = time;
+    this.lastActivity = time;
     this.streak = [];
     this.fitCache = null;
   }
@@ -145,10 +163,8 @@ export class TempoEstimator {
     // I doppi tap (echi, rimbalzi) non dicono nulla sul tempo: si ignorano e basta.
     if (reason !== 'off-grid') return { status: 'rejected', reason };
 
-    this.offGrid.push(time - this.origin);
-    if (this.offGrid.length > 8) this.offGrid.shift();
-    if (this.tryHalfGrid(time)) return { status: 'accepted', reason: 'half-grid' };
-
+    // Un colpo scartato è comunque attività: mentre batti la misura non scade.
+    this.lastActivity = time;
     this.streak.push(time);
     if (this.streak.length > this.cfg.changeAfter) this.streak.shift();
 
@@ -156,7 +172,9 @@ export class TempoEstimator {
     if (this.streak.length === this.cfg.changeAfter) {
       const gaps = this.streak.slice(1).map((v, i) => v - this.streak[i]);
       const mean = gaps.reduce((a, b) => a + b, 0) / gaps.length;
-      const coherent = mean >= this.minPeriod && mean <= this.maxPeriod &&
+      // Passo pari a mezzo battito: sono colpi falsi in mezzo ai veri, non un nuovo tempo.
+      const halfBeat = Math.abs(mean / this.fit().period - 0.5) < 0.1;
+      const coherent = !halfBeat && mean >= this.minPeriod && mean <= this.maxPeriod &&
         gaps.every((g) => Math.abs(g - mean) <= this.cfg.changeTolerance * mean);
       if (coherent) {
         this.startAt(this.streak);
@@ -166,37 +184,18 @@ export class TempoEstimator {
     return { status: 'rejected', reason };
   }
 
-  // Se il secondo tap si perde, il primo intervallo vale due battiti e la griglia
-  // nasce a metà tempo: da lì un tap su due cade esattamente a metà tra due
-  // battiti e verrebbe scartato. Quando almeno due tap scartati stanno a metà
-  // griglia, la griglia si dimezza e quei tap vengono recuperati.
-  tryHalfGrid(time) {
-    const f = this.fit();
-    const half = f.period / 2;
-    if (half < this.minPeriod) return false;
-    const halfway = this.offGrid.filter((t) => {
-      const x = (t - f.intercept) / half;
-      const k = Math.round(x);
-      return Math.abs(x - k) < 0.2 && Math.abs(k % 2) === 1;
-    });
-    if (halfway.length < 2) return false;
-
-    const times = [...this.taps.map((p) => p.t), ...halfway].sort((a, b) => a - b);
-    const ks = times.map((t) => Math.round((t - f.intercept) / half));
-    if (ks.some((k, i) => i > 0 && k <= ks[i - 1])) return false;
-
-    const backup = this.taps;
-    this.taps = times.map((t, i) => ({ t, k: ks[i] - ks[0] }));
+  // Griglia troppo fitta: se gli ultimi 4 intervalli sono tutti di un numero pari
+  // di battiti, il battito vero è ogni due passi. Si tengono i tap sui passi pari
+  // (rispetto all'ultimo) e si scartano quelli a metà, che erano colpi falsi.
+  widenGrid() {
+    const recent = this.taps.slice(-5);
+    if (recent.length < 5) return false;
+    const gaps = recent.slice(1).map((p, i) => p.k - recent[i].k);
+    if (!gaps.every((g) => g % 2 === 0)) return false;
+    const lastK = this.taps[this.taps.length - 1].k;
+    const kept = this.taps.filter((p) => (p.k - lastK) % 2 === 0);
+    this.taps = kept.map((p) => ({ t: p.t, k: (p.k - kept[0].k) / 2 }));
     this.fitCache = null;
-    const nf = this.fit();
-    if (Math.sqrt(nf.sse / Math.max(1, nf.n - 2)) > 0.2 * nf.period) {
-      this.taps = backup;
-      this.fitCache = null;
-      return false;
-    }
-    this.offGrid = this.offGrid.filter((t) => !halfway.includes(t));
-    this.streak = [];
-    this.lastTime = Math.max(this.lastTime, time);
     return true;
   }
 
@@ -230,17 +229,6 @@ export class TempoEstimator {
     const variance = (this.cfg.priorWeight * prior * prior + sse) / (this.cfg.priorWeight + dof);
     this.fitCache = { n, mk, skk, period, intercept, sse, variance };
     return this.fitCache;
-  }
-
-  // Dove cadrà il primo battito dopo l'istante `after` (tempo assoluto, ms) e con che margine.
-  nextBeat(after = this.lastTime) {
-    if (this.taps.length < 2) return null;
-    const f = this.fit();
-    let k = this.taps[this.taps.length - 1].k + 1;
-    const beatTime = (i) => this.origin + f.intercept + f.period * i;
-    while (beatTime(k) < after + 0.5 * f.period) k += 1;
-    const halfWidth = Math.min(0.3 * f.period, Math.max(60, 3 * this.predictionError(f, k)));
-    return { time: beatTime(k), halfWidth };
   }
 
   // Errore standard della posizione prevista del battito k (intervallo di previsione).
