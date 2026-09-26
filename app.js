@@ -4,7 +4,9 @@ import { KnockDetector, KNOCK_REJECT_REASONS } from './knock.js';
 import { MacMotion, servedByHelper } from './mac-motion.js';
 import { analyzeFile, FILE_ACCEPT } from './file-analysis.js';
 import { Listener } from './listen.js';
-import { Metronome, playCadence, playChord, stopCadence, releaseAudioSession } from './sound.js';
+import { Metronome, playCadence, playChord, playProgression, stopCadence, releaseAudioSession } from './sound.js';
+import { chordName } from './chord-names.js';
+import { renderStructurePanel, renderHistoryStructure, renderGroups, toggleExpanded, compactStructure, expandStructure, progressionToPlay, orderByLoop } from './structure-view.js';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -56,6 +58,14 @@ const els = {
   fileInput: $('fileInput'),
   dropOverlay: $('dropOverlay'),
   chordChips: $('chordChips'),
+  structure: {
+    panel: $('structurePanel'),
+    meta: $('structureMeta'),
+    timeline: $('structureTimeline'),
+    whole: $('structureWhole'),
+    groups: $('structureGroups'),
+    note: $('structureNote'),
+  },
 };
 
 // Dopo un tocco sullo schermo si ignorano i colpi letti dal sensore per un
@@ -208,7 +218,7 @@ function newMeasure() {
   if (state.phase === 'tapping') finalize();
   if (state.phase === 'listening') listener.stop();
   estimator.reset();
-  Object.assign(state, { phase: 'idle', multiplier: 1, lockedResult: null, savedId: null, outcome: null, lockedKey: null, lockedChords: null, listen: null });
+  Object.assign(state, { phase: 'idle', multiplier: 1, lockedResult: null, savedId: null, outcome: null, lockedKey: null, lockedChords: null, lockedStructure: null, listen: null });
   render();
 }
 
@@ -244,7 +254,7 @@ async function toggleListening() {
   stopMetronome();
   releaseAudioSession(); // il microfono ha bisogno della sessione audio "registra e suona"
   Object.assign(state, {
-    phase: 'listening', multiplier: 1, source: 'listen', listen: null, lockedResult: null, lockedKey: null, lockedChords: null, savedId: null, outcome: null,
+    phase: 'listening', multiplier: 1, source: 'listen', listen: null, lockedResult: null, lockedKey: null, lockedChords: null, lockedStructure: null, savedId: null, outcome: null,
   });
   render();
   try {
@@ -282,7 +292,8 @@ function saveAnalysis(update, source, name = '') {
   const t = update?.tempo;
   const result = t ? { bpm: t.bpm, halfWidth: t.halfWidth, taps: t.beats, valid: source === 'file' || t.stable } : null;
   const key = update?.key || null;
-  Object.assign(state, { phase: 'locked', source, lockedResult: result, lockedKey: key, lockedChords: shownChords(update?.chords) });
+  const structure = update?.structure?.shown ? update.structure : null;
+  Object.assign(state, { phase: 'locked', source, lockedResult: result, lockedKey: key, lockedChords: orderByLoop(shownChords(update?.chords), structure), lockedStructure: structure });
   if (result && result.taps >= 8) {
     const entry = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -292,6 +303,7 @@ function saveAnalysis(update, source, name = '') {
       source,
       key: key && { tonic: key.tonic, mode: key.mode, name: key.name, alternative: key.alternative || null, probability: key.probability ?? null },
       chords: state.lockedChords.length ? state.lockedChords : undefined,
+      structure: compactStructure(structure),
       createdAt: Date.now(),
       name,
     };
@@ -309,7 +321,7 @@ function saveAnalysis(update, source, name = '') {
 // ---------- File audio ----------
 
 let fileJob = null;
-const FILE_STAGES = { decode: 'lettura del file', load: 'preparazione', rhythm: 'tempo e battiti', key: 'tonalità', chords: 'accordi', done: 'fatto' };
+const FILE_STAGES = { decode: 'lettura del file', load: 'preparazione', rhythm: 'tempo e battiti', key: 'tonalità', chords: 'accordi', structure: 'struttura', done: 'fatto' };
 
 function startFileAnalysis(file) {
   if (!file) return;
@@ -321,7 +333,7 @@ function startFileAnalysis(file) {
   const name = file.name.replace(/\.[^.]+$/, '');
   els.listenError.hidden = true;
   Object.assign(state, {
-    phase: 'analyzing', multiplier: 1, source: 'file', listen: null, lockedResult: null, lockedKey: null, lockedChords: null,
+    phase: 'analyzing', multiplier: 1, source: 'file', listen: null, lockedResult: null, lockedKey: null, lockedChords: null, lockedStructure: null,
     savedId: null, outcome: null, fileName: name, fileProgress: 0, fileStage: 'decode',
   });
   render();
@@ -418,6 +430,7 @@ function render() {
   }
   renderListen();
   renderChords();
+  renderStructure();
   renderMetronome();
 
   els.status.textContent = statusText(result);
@@ -483,20 +496,6 @@ function renderListen() {
 // 20 s: nelle prove (brani mai visti, anche dal microfono) sono nella canzone ~9 volte su 10.
 const CHORD_MIN_SHARE = 0.1;
 const CHORD_MIN_SECONDS = 20;
-const SHARP_NAMES = ['Do', 'Do♯', 'Re', 'Re♯', 'Mi', 'Fa', 'Fa♯', 'Sol', 'Sol♯', 'La', 'La♯', 'Si'];
-const FLAT_NAMES = ['Do', 'Re♭', 'Re', 'Mi♭', 'Mi', 'Fa', 'Sol♭', 'Sol', 'La♭', 'La', 'Si♭', 'Si'];
-
-// Diesis o bemolli come nell'armatura della tonalità (in Re maggiore: Fa♯m, non Sol♭m).
-function usesSharps(key) {
-  if (!key) return false;
-  const major = key.mode === 'minor' ? (key.tonic + 3) % 12 : key.tonic;
-  return [7, 2, 9, 4, 11, 6].includes(major);
-}
-
-function chordName(label, key) {
-  return (usesSharps(key) ? SHARP_NAMES : FLAT_NAMES)[label % 12] + (label < 12 ? '' : 'm');
-}
-
 function shownChords(chords) {
   if (!chords || chords.seconds < CHORD_MIN_SECONDS) return [];
   return chords.shares.filter((c) => c.share >= CHORD_MIN_SHARE).map((c) => c.chord);
@@ -515,12 +514,49 @@ function chordChip(label, key, playable) {
 
 function renderChords() {
   const listening = state.phase === 'listening';
-  const labels = listening ? shownChords(state.listen?.chords) : state.phase === 'locked' ? state.lockedChords || [] : [];
+  const labels = listening ? orderByLoop(shownChords(state.listen?.chords), state.listen?.structure) : state.phase === 'locked' ? state.lockedChords || [] : [];
   const key = listening ? state.listen?.key : state.lockedKey;
   els.chordLine.hidden = labels.length === 0;
   // Durante l'ascolto non si suonano: il microfono li sentirebbe.
   els.chordChips.replaceChildren(...labels.map((label) => chordChip(label, key, !listening)));
 }
+
+// ---------- Struttura e giri ----------
+
+// Durante l'ascolto la struttura si aggiorna (se l'ascolto è lungo e pulito); a misura finita
+// resta a schermo e i giri si possono ascoltare.
+function currentStructure() {
+  if (state.phase === 'listening') return state.listen?.structure?.shown ? state.listen.structure : null;
+  if (state.phase === 'locked') return state.lockedStructure || null;
+  return null;
+}
+
+function renderStructure() {
+  const listening = state.phase === 'listening';
+  const key = listening ? state.listen?.key : state.lockedKey;
+  renderStructurePanel(els.structure, currentStructure(), key, { playable: !listening });
+}
+
+// Suona il giro di una lettera (o la proposta di un giro noto) al tempo della canzone.
+function playSection(structure, letter, bpm, alternative = false) {
+  const chords = progressionToPlay(structure, letter, { alternative });
+  if (!chords.length) return;
+  stopMetronome();
+  playProgression(chords, bpm);
+}
+
+els.structure.panel.addEventListener('click', (event) => {
+  const expand = event.target.closest('[data-expand]');
+  if (expand) {
+    const st = currentStructure();
+    if (st) { toggleExpanded(st, expand.dataset.expand); renderStructure(); }
+    return;
+  }
+  const target = event.target.closest('[data-play]');
+  if (!target || state.phase !== 'locked' || !state.lockedStructure) return;
+  const bpm = (state.lockedResult?.bpm || 100) * state.multiplier;
+  playSection(state.lockedStructure, target.dataset.play, bpm, target.dataset.alternative === '1');
+});
 
 // Affidabilità della tonalità: la probabilità del modello, e l'alternativa quando è vicina.
 // Soglie tarate su brani mai visti ascoltati dal microfono (lab/key-app-eval.mjs):
@@ -865,7 +901,7 @@ function setMode(requested) {
   if (state.phase === 'listening') listener.stop();
   // La misura appena fatta è già nello storico: la nuova modalità parte pulita.
   if (state.phase === 'locked' && mode !== state.mode) {
-    Object.assign(state, { phase: 'idle', multiplier: 1, lockedResult: null, savedId: null, outcome: null, lockedKey: null, lockedChords: null, listen: null });
+    Object.assign(state, { phase: 'idle', multiplier: 1, lockedResult: null, savedId: null, outcome: null, lockedKey: null, lockedChords: null, lockedStructure: null, listen: null });
   }
   state.mode = mode;
   store.set(KEYS.mode, mode);
@@ -957,6 +993,8 @@ function historyItem(entry) {
     row.append(...entry.chords.map((label) => chordChip(label, entry.key, true)));
     li.append(row);
   }
+  const structure = entry.structure && renderHistoryStructure(entry.structure, entry.key);
+  if (structure) li.append(structure);
   li.append(name, meta);
   return li;
 }
@@ -972,6 +1010,29 @@ function chip(action, label, ariaLabel) {
 }
 
 els.historyList.addEventListener('click', (event) => {
+  const expand = event.target.closest('button[data-expand]');
+  if (expand) {
+    const row = expand.closest('.group');
+    row?.classList.add('expanded');
+    const entry = history.find((e) => e.id === expand.closest('.history-item').dataset.id);
+    const structure = entry && expandStructure(entry.structure);
+    if (structure && row) {
+      // Nello storico la riga si ridisegna da sola, con tutti gli accordi.
+      toggleExpanded(structure, expand.dataset.expand);
+      const list = document.createElement('ul');
+      renderGroups(list, structure, entry.key, { playable: true, maxChords: 6 });
+      const fresh = [...list.children].find((li) => li.querySelector('.group-badge')?.textContent === expand.dataset.expand);
+      if (fresh) row.replaceWith(fresh);
+    }
+    return;
+  }
+  const play = event.target.closest('button[data-play]');
+  if (play) {
+    const entry = history.find((e) => e.id === play.closest('.history-item').dataset.id);
+    const structure = entry && expandStructure(entry.structure);
+    if (structure) playSection(structure, play.dataset.play, entry.bpm, play.dataset.alternative === '1');
+    return;
+  }
   const button = event.target.closest('button[data-action]');
   if (!button) return;
   const id = button.closest('.history-item').dataset.id;

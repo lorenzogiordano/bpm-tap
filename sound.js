@@ -166,3 +166,27 @@ export function playChord(label) {
   for (const interval of [0, third, 7]) note(ac, master, root + interval, start, 1.6, 0.5);
   note(ac, master, root - 12, start, 1.6, 0.6);
 }
+
+// Un giro di accordi al tempo della canzone: chords = [{ chord, beats }] (0–23, battiti che
+// dura ciascuno), bpm. Accordo in posizione stretta con il basso, come playChord; l'ultimo
+// suona un po' più a lungo. Restituisce la durata (s). stopCadence() lo ferma.
+export function playProgression(chords, bpm) {
+  const ac = context();
+  stopCadence();
+  const master = ac.createGain();
+  master.gain.value = 0.22;
+  master.connect(ac.destination);
+  voice = { master, ac };
+  const beat = 60 / Math.min(200, Math.max(50, bpm || 100));
+  let t = ac.currentTime + 0.05;
+  chords.forEach(({ chord, beats }, i) => {
+    const length = Math.max(0.25, beats * beat) * (i === chords.length - 1 ? 1.5 : 1);
+    let root = 60 + (chord % 12);
+    if (root > 66) root -= 12;
+    const third = chord < 12 ? 4 : 3;
+    for (const interval of [0, third, 7]) note(ac, master, root + interval, t, length, 0.45);
+    note(ac, master, root - 12, t, length, 0.55);
+    t += beats * beat;
+  });
+  return t - ac.currentTime;
+}

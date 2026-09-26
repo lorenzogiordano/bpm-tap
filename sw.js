@@ -2,7 +2,7 @@
 // Strategia: precache dei file dell'app, poi "prima la rete": online si usa
 // sempre l'ultima versione pubblicata (e si aggiorna la cache), offline la cache.
 // Aumenta VERSION a ogni rilascio per ripulire le cache vecchie.
-const VERSION = 'bpm-tap-v9';
+const VERSION = 'bpm-tap-v10';
 
 const ASSETS = [
   './',
@@ -16,6 +16,8 @@ const ASSETS = [
   './listen.js',
   './file-analysis.js',
   './sound.js',
+  './chord-names.js',
+  './structure-view.js',
   './audio/dsp.js',
   './audio/rhythm.js',
   './audio/key.js',
@@ -26,6 +28,10 @@ const ASSETS = [
   './audio/key-features.js',
   './audio/chords.js',
   './audio/chord-model.json',
+  './audio/progressions.js',
+  './audio/structure.js',
+  './audio/progression-model.json',
+  './audio/structure-model.json',
   './audio/skey-graph.json',
   './audio/key-model.json',
   './audio/pcm-tap.js',
