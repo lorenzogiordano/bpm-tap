@@ -808,9 +808,8 @@ kbd {
   align-items: flex-end;
   padding: 0 0 5px 6px;
   border: 0;
-  border-top: 3px solid var(--c);
-  border-radius: 4px 4px 2px 2px;
-  background: color-mix(in srgb, var(--c) 26%, var(--surface));
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--c) 42%, var(--surface));
   color: var(--text);
   font-size: 12px;
   font-weight: 600;
@@ -820,8 +819,8 @@ kbd {
 }
 
 button.tl-block { cursor: pointer; }
-button.tl-block:active { background: color-mix(in srgb, var(--c) 45%, var(--surface)); }
-.tl-block.variant { background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--c) 26%, var(--surface)) 0 5px, color-mix(in srgb, var(--c) 12%, var(--surface)) 5px 10px); }
+button.tl-block:active { background: color-mix(in srgb, var(--c) 60%, var(--surface)); }
+.tl-block.variant { background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--c) 42%, var(--surface)) 0 5px, color-mix(in srgb, var(--c) 20%, var(--surface)) 5px 10px); }
 .tl-label { overflow: hidden; text-overflow: clip; }
 
 .whole {
@@ -843,9 +842,11 @@ button.tl-block:active { background: color-mix(in srgb, var(--c) 45%, var(--surf
 }
 
 .group {
-  padding: 10px 0 10px 12px;
-  border-left: 3px solid var(--c);
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
 }
+
+.group:first-child { border-top: 0; }
 
 .group-head {
   display: flex;
