@@ -377,21 +377,42 @@ export function snapDecision(G, detected, candidates, loopScore, rule = SNAP_RUL
 // Giro di una sezione (tutte le sue ripetizioni): periodo, accordi in ordine con durata e
 // sicurezza, nome se è un giro noto, eventuale correzione. instances: per ogni volta che la
 // sezione suona, la lista delle distribuzioni delle sue unità.
-export function sectionProgression(instances, meter, key, model, { minLoop = 0.75, periods = PERIODS, lambda = 0.3, rule = SNAP_RULE, maxBars = 16, across = true, nameLoop = 0.85, nameSure = 0.8, align = {} } = {}) {
+export function sectionProgression(instances, meter, key, model, { minLoop = 0.75, periods = PERIODS, lambda = 0.3, rule = SNAP_RULE, maxBars = 16, across = true, nameLoop = 0.85, nameSure = 0.8, align = {}, templateLoops = true } = {}) {
   const upb = unitsPerBar(meter);
   const loop = findLoop(instances, meter, { periods });
-  const isLoop = loop.period !== null && loop.score >= minLoop;
+  let isLoop = loop.period !== null && loop.score >= minLoop;
   // Senza giro fisso: la sezione intera (fino a maxBars), piegata solo sulle sue ripetizioni.
   const longestLength = Math.max(...instances.map((u) => u.length));
-  const lag = isLoop ? loop.period * upb : Math.min(longestLength, maxBars * upb);
+  let lag = isLoop ? loop.period * upb : Math.min(longestLength, maxBars * upb);
   // offsets: dove comincia ogni ripetizione nel giro (null = troppo diversa, non piegata).
-  const offsets = across ? alignInstances(instances, lag, isLoop, align) : instances.map((_, i) => (i === 0 ? 0 : null));
+  let offsets = across ? alignInstances(instances, lag, isLoop, align) : instances.map((_, i) => (i === 0 ? 0 : null));
   const used = instances.filter((_, i) => offsets[i] !== null);
-  const folded = fold(used, lag, offsets.filter((o) => o !== null), isLoop);
-  const unitChords = folded.map(argmaxChord);
+  let folded = fold(used, lag, offsets.filter((o) => o !== null), isLoop);
+  let unitChords = folded.map(argmaxChord);
+  let period = isLoop ? loop.period : null;
+  // Senza giro nelle singole ripetizioni, il riassunto piegato può comunque ripetersi identico
+  // (mediare le ripetizioni toglie i battiti incerti): allora è un giro.
+  // Solo se il riassunto copre le ripetizioni per intero (non per l'intero brano, di cui
+  // riassumerebbe solo l'inizio).
+  if (!isLoop && templateLoops && used.every((u) => u.length <= lag)) {
+    for (const p of periods) {
+      const w = p * upb;
+      if (2 * w > lag || lag % w) continue;
+      if (unitChords.every((c, k) => k < w || c === unitChords[k - w])) {
+        period = p;
+        isLoop = true;
+        folded = fold([folded], w, null, true);
+        offsets = offsets.map((o) => (o === null ? null : ((o % w) + w) % w));
+        lag = w;
+        unitChords = folded.map(argmaxChord);
+        break;
+      }
+    }
+  }
   const unitP = folded.map((q, k) => q[unitChords[k]]);
   let alternative = null;
   let named = null;
+  const loopScore = Math.max(loop.score, isLoop && period !== loop.period ? minLoop : 0);
   if (isLoop && key) {
     // Posizioni uguali: tante quanti gli accordi trovati se dividono il giro, altrimenti le
     // battute o le unità. Solo se la divisione rappresenta fedelmente il giro trovato.
@@ -403,23 +424,24 @@ export function sectionProgression(instances, meter, key, model, { minLoop = 0.7
       const w = lag / n;
       if (!unitChords.every((c, k) => c === detected[Math.floor(k / w)])) continue;
       // Nome solo se il giro è netto e ogni accordo sicuro: su Billboard (sezioni annotate) il
-      // giro annotato è davvero quello circa 9 volte su 10 (lab/progressions-eval.mjs).
+      // giro annotato è davvero quello circa 9 volte su 10 (lab/progressions-dictionary.mjs).
       const sure = Math.min(...G.map((g, j) => g[detected[j]]));
-      if (loop.score >= nameLoop && sure >= nameSure) named = recognize(detected, key);
+      if (loopScore >= nameLoop && sure >= nameSure) named = recognize(detected, key);
       // Un giro noto che differisce in una sola posizione incerta: si propone, non si sostituisce.
       const candidates = scoreCandidates(G, key, model, { lambda });
-      const s = snapDecision(G, detected, candidates, loop.score, rule);
+      const s = snapDecision(G, detected, candidates, loopScore, rule);
       if (s) alternative = { position: s.position, chords: candidates[0].chords, id: s.entry.id, name: s.entry.name, probability: Math.round(s.probability * 100) / 100 };
       break;
     }
   }
+  const meanLength = instances.reduce((acc, u) => acc + u.length, 0) / instances.length;
   return {
     loop: isLoop,
-    period: isLoop ? loop.period : null,
+    period,
     units: lag,
     bars: lag / upb,
-    loopScore: Math.round(loop.score * 1000) / 1000,
-    repeats: isLoop ? Math.round((instances.reduce((acc, u) => acc + u.length, 0) / instances.length / lag) * 10) / 10 : 1,
+    loopScore: Math.round(loopScore * 1000) / 1000,
+    repeats: isLoop ? Math.round((meanLength / lag) * 10) / 10 : 1,
     unitChords,
     offsets,
     chords: mergeUnits(unitChords, unitP),
