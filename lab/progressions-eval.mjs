@@ -54,7 +54,7 @@ for (let f = 0; f < FOLDS; f++) {
     let bars;
     let groups;
     if (mode === 'estimated') {
-      const r = analyzeBars(s.beats, s.post, s.beats.map((b) => b.loud), { lengthPrior: prior });
+      const r = analyzeBars(s.beats, s.post, s.beats.map((b) => b.loud), { lengthPrior: prior, timbre: s.beats.map((b) => b.timbre.slice(1)) });
       if (!r) continue;
       bars = r.bars;
       groups = {};

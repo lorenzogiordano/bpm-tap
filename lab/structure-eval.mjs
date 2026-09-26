@@ -6,8 +6,9 @@
 //              coppie), gruppi di sviluppo (0–2) e di prova (3–4), anche solo sui brani che
 //              l'app mostrerebbe (somiglianza tra ripetizioni ≥ soglia)
 //   lengths:   lunghezze delle sezioni annotate, in battute
-// Le opzioni chiave=valore passano a analyzeBars (es. refine=0, useTimbre=true con
-// weights={"chroma":1,"chords":1,"loud":0.5,"timbre":1} per il timbro di Echo Nest).
+// Le opzioni chiave=valore passano a analyzeBars (es. refine=0). Il timbro è quello di Echo
+// Nest (12 coefficienti per segmento, senza il primo), al posto di quello dell'app;
+// noTimbre=true lo toglie.
 import { loadBillboard, foldOf } from './billboard.mjs';
 import { posteriorsFor, boundaryF, pairwiseF, mean, pct, lengthPrior, sectionBars } from './structure-common.mjs';
 import { findDownbeats, changeCurve, analyzeBars, STRUCTURE_DEFAULTS } from '../audio/structure.js';
@@ -70,7 +71,7 @@ function bestPhase(post) {
 
 // Sezioni stimate in secondi, con lettera.
 export function estimate(song, cfg) {
-  const r = analyzeBars(song.beats, song.post, song.beats.map((b) => b.loud), { ...cfg, timbre: cfg.useTimbre ? song.beats.map((b) => b.timbre.slice(1)) : null });
+  const r = analyzeBars(song.beats, song.post, song.beats.map((b) => b.loud), { ...cfg, timbre: cfg.noTimbre ? null : song.beats.map((b) => b.timbre.slice(1)) });
   if (!r) return null;
   const t0 = (k) => song.beats[r.bars[k].from].start;
   const t1 = (k) => song.beats[r.bars[k].to - 1].end;

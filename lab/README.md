@@ -12,9 +12,11 @@ L'audio e le annotazioni non sono nel repository. Vanno in `lab/work/data/<racco
 | GiantSteps Key | 604 | tonalità | [giantsteps-key-dataset](https://github.com/GiantSteps/giantsteps-key-dataset), audio dal backup JKU |
 | GiantSteps Tempo | 664 | tempo | [giantsteps-tempo-dataset](https://github.com/GiantSteps/giantsteps-tempo-dataset), annotazioni v2 (Schreiber & Müller 2018) |
 | GiantSteps MTG Key | 1349 | tonalità (allenamento) | [giantsteps-mtg-key-dataset](https://github.com/GiantSteps/giantsteps-mtg-key-dataset) |
-| AAM | 397 (dei 3000) | accordi | [zenodo 5794629](https://zenodo.org/records/5794629), canzoni sintetiche con accordi esatti; i mix sono estratti dallo zip remoto con richieste parziali |
+| AAM | 397 (dei 3000) | accordi, struttura | [zenodo 5794629](https://zenodo.org/records/5794629), canzoni sintetiche con accordi esatti e segni di sezione (A, B, C in `ann/*_segments.arff`, con tonalità e strumenti che cambiano); i mix sono estratti dallo zip remoto con richieste parziali |
 | GuitarSet | 180 accompagnamenti | accordi | [zenodo 3371780](https://zenodo.org/records/3371780), audio del microfono, accordi del leadsheet ridotti a maggiore/minore |
 | FMAK | 5488 | tonalità (allenamento) | annotazioni FMAK v2 (Kong et al., STONE, ISMIR 2024), audio da `fma_large` del [Free Music Archive](https://github.com/mdeff/fma) |
+| McGill Billboard | 739 brani unici (890 righe) | struttura, giri, passaggi tra accordi | [DDMAL](https://ddmal.ca/research/The_McGill_Billboard_Project_(Chord_Analysis_Dataset)/), CC0: `billboard-2.0-salami_chords` (accordi, sezioni con lettera e funzione), `billboard-2.0-chordino` (cromagramma NNLS di basso e acuti), `billboard-2.0-echonest` (battiti, volume e timbro); niente audio. In `billboard/raw/McGill-Billboard/<id>/` |
+| RS 200 | 200 | passaggi tra accordi | [rock corpus](http://rockcorpus.midside.com/) v2.1 di de Clercq & Temperley (CC BY 4.0), analisi armoniche `*_dt.har`, in `rs200/rock_corpus_v2-1/` |
 
 Tutti i brani durano 30 s: GTZAN e FMA sono già clip da 30 s; delle anteprime GiantSteps (2 minuti) si è tenuto, per lo spazio su disco, l'estratto centrale di 30 s (20 s per GiantSteps Tempo). I risultati pubblicati sulle anteprime intere non sono quindi direttamente confrontabili.
 
@@ -43,5 +45,14 @@ Ogni brano ha il suo scenario, estratto da un seme ricavato dal nome del brano. 
 | `chords-keys.mjs <raccolta> <clean\|mic>` | tonalità stimata dall'app per gli stessi brani |
 | `chords-learn.mjs <prova>` | modello degli accordi: `mixed-cv` (prova finale), `gs-cv`, `aam-cv`, `aam2gs`, `gs2aam`, `final --write` (con `KEY_SOURCE=est KEY_WEIGHT=0.5 TEMPERATURE=0.5`) |
 | `listen-sim.mjs` / `listen-proxy.mjs` | la tonalità come la vede l'app durante l'ascolto (dopo 6, 14, 22, 30 s) e come unire i passaggi di S-KEY |
+| `billboard.mjs` | legge Billboard (formato salami_chords, cromagramma di Chordino, Echo Nest) → `cache/structure/billboard.json`: battiti con cromagramma, volume e timbro, sezioni, battute e accordi annotati |
+| `progressions-tables.mjs [--write]` | passaggi tra accordi relativi alla tonica, per modo, da Billboard e RS 200 → `audio/progression-model.json` |
+| `structure-eval.mjs <downbeats\|segment>` | primi battiti e confini/lettere su Billboard (HR.5F, HR3F, F a coppie), sviluppo e prova, anche solo sui brani mostrati |
+| `structure-names.mjs <cv\|oracle\|export>` | ruoli delle sezioni (strofa, ritornello…) in validazione incrociata, sulle sezioni trovate o annotate; `export --write` → `audio/structure-model.json` |
+| `progressions-eval.mjs <oracle\|estimated>` | giri su Billboard: giro sì/no e periodo, accordi per battito (HMM, mezza battuta, giro della sezione), giri con nome |
+| `progressions-dictionary.mjs` | confronto con i giri noti: correggere una posizione o riordinare aiuterebbe? il nome è giusto? |
+| `structure-aam.mjs <clean\|mic> [--shown]` | percorso completo dall'audio su AAM (battiti, accordi, tonalità stimata, struttura): confini, lettere, giri, accordi per battito |
+
+Per la struttura servono la cache degli accordi e delle tonalità di AAM (`chords-keys.mjs aam clean|mic`) e `billboard.mjs` una volta. Le misure sono nel README principale, alla voce "Struttura e giri".
 
 Gli altri script (`key-learn`, `key-big`, `sweep`, `key-baseline`, `diagnose`, `by-genre`, `error-structure`, `noise-types`…) sono le prove intermedie citate nel README principale.

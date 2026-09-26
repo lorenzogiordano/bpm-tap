@@ -52,7 +52,7 @@ function analyze(song, prior, oracle = false) {
     starts[0] = 0;
     sections = starts.map((a, i) => ({ start: a, end: i + 1 < starts.length ? starts[i + 1] : bars.length, letter: letters[i] })).filter((x) => x.end > x.start);
   } else {
-    const r = analyzeBars(song.beats, song.post, song.beats.map((b) => b.loud), { lengthPrior: prior });
+    const r = analyzeBars(song.beats, song.post, song.beats.map((b) => b.loud), { lengthPrior: prior, timbre: song.beats.map((b) => b.timbre.slice(1)) });
     if (!r) return null;
     ({ bars, features, sections } = r);
     song.within = r.within;

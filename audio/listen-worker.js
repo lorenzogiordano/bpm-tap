@@ -14,7 +14,7 @@ import { tempoCandidates, chooseTempo } from './tempo-choice.js';
 import { SKey, SKEY_RATE, DeepAverage } from './skey.js';
 import { chromaBlocks, skeyBlocks, standardize, scoreKeys, softmax } from './key-features.js';
 import { beatChroma, chordScores, transitionMatrix, decode, chordShares, keyBonus } from './chords.js';
-import { songStructure, beatLoudness } from './structure.js';
+import { songStructure, beatLoudness, beatTimbre } from './structure.js';
 
 const RATE = SKEY_RATE;             // 22050 Hz per tutte le analisi
 const SKEY_WINDOW = 30;             // secondi di audio dati a S-KEY
@@ -29,6 +29,7 @@ const CHORD_MIN_SECONDS = 10;
 const STRUCTURE_MIN_SECONDS = 60;
 const STRUCTURE_MIN_SNR = 15;
 const STRUCTURE_MIN_KEY = 0.5;
+const TIMBRE_EVERY = 16;
 // Indizi che richiedono il cromagramma (se il modello non li usa, il cromagramma non si calcola).
 const CHROMA_BLOCKS = new Set(['treble', 'bass', 'active', 'majtriad', 'mintriad', 'gbass']);
 const needsChroma = () => Boolean(keyModel && keyModel.blocks.some((b) => CHROMA_BLOCKS.has(b)));
@@ -71,7 +72,8 @@ function start({ sampleRate, calibrate, beatSeconds = 300 }) {
     musicSum: 0,        // potenza della musica durante l'ascolto
     musicCount: 0,
     loud: 0,
-    rhythm: new RhythmAnalyzer({ sampleRate: RATE, beatSeconds }),
+    // Bande mel medie ogni 16 frame (93 ms): il timbro per la struttura.
+    rhythm: new RhythmAnalyzer({ sampleRate: RATE, beatSeconds, spectrumEvery: TIMBRE_EVERY }),
     chroma: new ChromaAnalyzer({ sampleRate: RATE, method: 'nnls' }),
     chordChroma: new ChromaAnalyzer({ sampleRate: RATE, method: 'nnls', hop: CHORD_HOP }),
     chordFrames: [],    // cromagramma NNLS di ogni frame (calcolato una volta)
@@ -247,7 +249,8 @@ function chordUpdate() {
   const { posteriors } = decode(scores, chordTransitions);
   state.chords = { shares: chordShares(beats, posteriors).slice(0, 8), seconds: state.seconds };
   const loudness = beatLoudness(chordChroma.frames.map((r) => r.rms), times, beats);
-  state.chordBeats = { beats, posteriors, loudness };
+  const timbre = beatTimbre(state.rhythm.spectra, TIMBRE_EVERY / state.rhythm.fps, beats);
+  state.chordBeats = { beats, posteriors, loudness, timbre };
   return state.chords;
 }
 
@@ -261,9 +264,9 @@ function structureUpdate(fromMic = false) {
     const clean = noise === null || noise >= STRUCTURE_MIN_SNR;
     if (state.seconds < STRUCTURE_MIN_SECONDS || !stable || !clean || !(state.key?.probability >= STRUCTURE_MIN_KEY)) return state.structure;
   }
-  const { beats, posteriors, loudness } = state.chordBeats;
+  const { beats, posteriors, loudness, timbre } = state.chordBeats;
   try {
-    state.structure = songStructure({ beats, posteriors, loudness, key: state.key }, structureModels);
+    state.structure = songStructure({ beats, posteriors, loudness, timbre, key: state.key }, structureModels);
   } catch (error) {
     // Un errore nella struttura non deve togliere BPM, tonalità e accordi.
     console.error(error);

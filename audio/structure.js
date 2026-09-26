@@ -6,7 +6,8 @@
 //    d'accordo (il primo battito è dove cambiano più spesso). Solo 4/4: il 3/4 riconosciuto
 //    così è giusto 4 volte su 10.
 // 2. Indizi per battuta: cromagramma di basso e acuti e probabilità degli accordi per mezza
-//    battuta, volume.
+//    battuta, volume e timbro (coefficienti cepstrali delle bande mel del tracciatore del tempo:
+//    quando cambiano gli strumenti cambia la sezione).
 // 3. Matrice di somiglianza tra battute (coseno sugli indizi centrati; volume con una gaussiana).
 // 4. Confini: novità di Foote (blocchi omogenei) più novità delle ripetizioni di Serrà et al.
 //    (dove comincia un passaggio che torna altrove), poi programmazione dinamica con la
@@ -103,6 +104,22 @@ export function makeBars(nBeats, starts, meter) {
 }
 
 // ---------- Indizi e somiglianza ----------
+
+// Timbro per battito: coefficienti cepstrali (come gli MFCC, senza il primo che è il volume)
+// dalle bande mel medie del tracciatore del tempo. spectra: bande (log) ogni `step` secondi a
+// partire da t0; beats: { start, end }.
+export function beatTimbre(spectra, step, beats, coefficients = 12, t0 = 0) {
+  if (!spectra.length) return null;
+  const bands = spectra[0].length;
+  const dct = Array.from({ length: coefficients }, (_, k) => Float64Array.from({ length: bands }, (__, b) => Math.cos((Math.PI * (k + 1) * (b + 0.5)) / bands)));
+  return beats.map((beat) => {
+    const from = Math.max(0, Math.floor((beat.start - t0) / step));
+    const to = Math.min(spectra.length, Math.max(from + 1, Math.ceil((beat.end - t0) / step)));
+    const mean = new Float64Array(bands);
+    for (let i = from; i < to; i++) for (let b = 0; b < bands; b++) mean[b] += spectra[i][b] / Math.max(1, to - from);
+    return dct.map((row) => row.reduce((a, w, b) => a + w * mean[b], 0));
+  });
+}
 
 // Volume per battito (dB) dal valore efficace dei frame del cromagramma: rms e times per frame,
 // beats come quelli di beatChroma ({ start, end }).
@@ -380,7 +397,7 @@ export function groupSegments(S, segments, { threshold = 0.35, shifts = 1 } = {}
 export const STRUCTURE_DEFAULTS = {
   embed: 1,                 // battute per vettore (con 2 i confini arrivano una battuta prima)
   smooth: 1,                // lisciatura lungo le diagonali, ± battute
-  weights: { chroma: 1, chords: 1, loud: 0.5 },
+  weights: { chroma: 1, chords: 1, loud: 0.5, timbre: 1 }, // il timbro vale solo se c'è
   foote: 6,                 // metà del nucleo di Foote, in battute
   mix: 0.5,                 // peso della novità delle ripetizioni rispetto a Foote
   sigma: 2,
@@ -558,24 +575,24 @@ export function chorusMargin(sections, posteriors, roles = ROLES) {
 }
 
 // Quando mostrare. Lettere: brano di almeno 60 s e 24 battute, almeno due sezioni, e le
-// ripetizioni della stessa lettera simili in media almeno 0,5 (su Billboard restano 2 brani su
-// 3, con confini e lettere un po' più giusti: lab/structure-eval.mjs). Nomi (strofa,
+// ripetizioni della stessa lettera simili in media almeno 0,45 (su Billboard restano 3 brani su
+// 4, con confini e lettere un po' più giusti: lab/structure-eval.mjs). Nomi (strofa,
 // ritornello…): spenti. Con le sezioni trovate dall'app il ritornello nominato è giusto circa
 // una volta su due anche nei casi più netti (lab/structure-names.mjs); names: true li riaccende
 // con un margine ≥ namesMargin sulla seconda lettera, che torni almeno due volte, brano ≥ 90 s.
-export const SHOW = { minSeconds: 60, minBars: 24, minWithin: 0.5, names: false, namesMargin: 0.5, namesSeconds: 90 };
+export const SHOW = { minSeconds: 60, minBars: 24, minWithin: 0.45, names: false, namesMargin: 0.5, namesSeconds: 90 };
 
 const round = (x, d = 2) => Math.round(x * 10 ** d) / 10 ** d;
 
 // Struttura completa per l'app: sezioni con lettera (ed eventuale ruolo), giro di ogni
 // lettera, giro dell'intero brano. models: { structure: structure-model.json,
 // progressions: progression-model.json }. null se non c'è abbastanza per dirlo.
-export function songStructure({ beats, posteriors, loudness = null, key = null }, models, options = {}) {
+export function songStructure({ beats, posteriors, loudness = null, key = null, timbre = null }, models, options = {}) {
   const show = { ...SHOW, ...(options.show || {}) };
   if (!beats || beats.length < 32) return null;
   const seconds = beats[beats.length - 1].end - beats[0].start;
   if (seconds < show.minSeconds) return null;
-  const r = analyzeBars(beats, posteriors, loudness, { lengthPrior: models.structure?.lengthPrior, ...options });
+  const r = analyzeBars(beats, posteriors, loudness, { lengthPrior: models.structure?.lengthPrior, timbre, ...options });
   if (!r || r.bars.length < show.minBars) return null;
   const upb = unitsPerBar(r.meter);
   const units = barUnits(posteriors, r.bars, r.meter).map((u) => u.p);

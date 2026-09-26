@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { trackDownbeats, makeBars, analyzeBars, songStructure, beatLoudness, nameSections, sectionCues, ROLES } from '../audio/structure.js';
+import { trackDownbeats, makeBars, analyzeBars, songStructure, beatLoudness, beatTimbre, nameSections, sectionCues, ROLES } from '../audio/structure.js';
 import { ChromaAnalyzer } from '../audio/key.js';
 import { RhythmAnalyzer } from '../audio/rhythm.js';
 import { tempoCandidates, chooseTempo } from '../audio/tempo-choice.js';
@@ -60,6 +60,17 @@ test('volume per battito dal valore efficace dei frame', () => {
   const loud = beatLoudness([0.1, 0.1, 0.01, 0.01], [0.1, 0.3, 0.6, 0.8], [{ start: 0, end: 0.5 }, { start: 0.5, end: 1 }]);
   assert.ok(Math.abs(loud[0] - -20) < 0.01);
   assert.ok(Math.abs(loud[1] - -40) < 0.01);
+});
+
+test('timbro per battito: coefficienti cepstrali delle bande mel, zero per uno spettro piatto', () => {
+  const flat = Array.from({ length: 20 }, () => new Float32Array(40).fill(3));
+  const tilted = Array.from({ length: 20 }, () => Float32Array.from({ length: 40 }, (_, b) => 5 - b / 10));
+  const beats = [{ start: 0, end: 0.5 }, { start: 0.5, end: 1 }];
+  const t = beatTimbre(flat, 0.1, beats);
+  assert.equal(t.length, 2);
+  assert.equal(t[0].length, 12);
+  assert.ok(t[0].every((v) => Math.abs(v) < 1e-9));
+  assert.ok(beatTimbre(tilted, 0.1, beats)[0][0] > 1, 'più energia in basso: primo coefficiente positivo');
 });
 
 test('struttura A A B B A A: confini dove cambia la musica, lettere uguali dove torna', () => {

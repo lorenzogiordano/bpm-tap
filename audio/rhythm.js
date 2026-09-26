@@ -31,6 +31,7 @@ export const RHYTHM_DEFAULTS = {
   tightness: 100,        // rigidità del tracciamento dei battiti (librosa)
   beatSeconds: 60,       // quanta storia usare per i battiti
   bandEdges: [200, 2000],// curve degli attacchi separate: bassi, medi, acuti (Hz)
+  spectrumEvery: 0,      // se > 0, media delle bande mel ogni tanti frame (timbro per la struttura)
 };
 
 function hzToMel(f) { return 2595 * Math.log10(1 + f / 700); }
@@ -79,6 +80,9 @@ export class RhythmAnalyzer {
     this.acSum = null;               // somma delle autocorrelazioni delle finestre
     this.acCount = 0;
     this.nextAcFrame = Math.round(this.cfg.acWindowSeconds * this.fps);
+    this.spectra = [];               // bande mel medie (log), una ogni spectrumEvery frame
+    this.spectrumSum = null;
+    this.spectrumCount = 0;
   }
 
   get seconds() {
@@ -112,6 +116,15 @@ export class RhythmAnalyzer {
       flux /= bands.length;
     }
     this.prevBands = bands;
+    if (this.cfg.spectrumEvery) {
+      if (!this.spectrumSum) this.spectrumSum = new Float64Array(bands.length);
+      for (let b = 0; b < bands.length; b++) this.spectrumSum[b] += bands[b];
+      if (++this.spectrumCount === this.cfg.spectrumEvery) {
+        this.spectra.push(Float32Array.from(this.spectrumSum, (v) => v / this.spectrumCount));
+        this.spectrumSum.fill(0);
+        this.spectrumCount = 0;
+      }
+    }
     this.onset.push(flux);
     for (let i = 0; i < 3; i++) this.bandOnset[i].push(count[i] ? part[i] / count[i] : 0);
 

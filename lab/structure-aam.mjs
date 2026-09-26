@@ -16,7 +16,7 @@ import { RhythmAnalyzer } from '../audio/rhythm.js';
 import { ChromaAnalyzer } from '../audio/key.js';
 import { tempoCandidates, chooseTempo } from '../audio/tempo-choice.js';
 import { beatChroma, chordScores, transitionMatrix, decode, keyBonus, NO_CHORD } from '../audio/chords.js';
-import { songStructure, beatLoudness } from '../audio/structure.js';
+import { songStructure, beatLoudness, beatTimbre } from '../audio/structure.js';
 import { PERIODS } from '../audio/progressions.js';
 
 const RATE = 22050;
@@ -79,7 +79,7 @@ function refPeriod(item, sec, beatRows) {
 
 function analyze(item, condition, keys) {
   const audio = Float32Array.from(conditionAudio(loadAudio(item), RATE, condition, hash(item.id)));
-  const rhythm = new RhythmAnalyzer({ sampleRate: RATE, beatSeconds: 1e6 });
+  const rhythm = new RhythmAnalyzer({ sampleRate: RATE, beatSeconds: 1e6, spectrumEvery: 16 });
   const chroma = new ChromaAnalyzer({ sampleRate: RATE, method: 'nnls', hop: HOP });
   for (let i = 0; i < audio.length; i += 8192) {
     const part = audio.subarray(i, i + 8192);
@@ -94,6 +94,7 @@ function analyze(item, condition, keys) {
   const times = frames.map((_, k) => (k * HOP) / RATE + centre);
   const beats = beatChroma(frames, times, beatTimes);
   const loudness = beatLoudness(chroma.frames.map((r) => r.rms), times, beats);
+  const timbre = beatTimbre(rhythm.spectra, 16 / rhythm.fps, beats);
   const model = load('chord-model.json');
   const key = keys[item.id]?.key || null;
   const scores = chordScores(beats, model.emission, keyBonus(key, model.keyPrior, model.keyWeight)).map((row) => row.map((x) => x / model.temperature));
@@ -106,6 +107,7 @@ function analyze(item, condition, keys) {
     beats: beats.map((b) => ({ start: r3(b.start), end: r3(b.end), treble: Array.from(b.treble, r3), bass: Array.from(b.bass, r3), energy: r3(b.energy) })),
     posteriors: posteriors.map((p) => Array.from(p, (x) => Math.round(x * 1e4) / 1e4)),
     loudness: loudness.map((x) => Math.round(x * 100) / 100),
+    timbre: timbre && timbre.map((v) => v.map((x) => Math.round(x * 100) / 100)),
     path,
   };
 }
@@ -151,7 +153,7 @@ if (!isMainThread) {
     const item = byId[r.id];
     const ref = refSections(r.id);
     const beatRows = refUnits(r.id);
-    const st = songStructure({ beats: r.beats, posteriors: r.posteriors, loudness: r.loudness, key: r.key }, models, options);
+    const st = songStructure({ beats: r.beats, posteriors: r.posteriors, loudness: r.loudness, key: r.key, timbre: options.noTimbre ? null : r.timbre }, models, options);
     if (!st) continue;
     if (st.shown) m.shown += 1;
     else if (shownOnly) continue;
