@@ -608,8 +608,9 @@ function statusText(result) {
     return `Analizzo «${state.fileName}»: ${FILE_STAGES[state.fileStage] || ''}… ${pct}%`;
   }
   if (state.phase === 'locked' && state.source === 'file') {
+    const below = state.lockedStructure ? ' Struttura e giri qui sotto.' : '';
     return state.outcome === 'saved'
-      ? `«${state.fileName}» analizzato e salvato.`
+      ? `«${state.fileName}» analizzato e salvato.${below}`
       : 'Non ho trovato abbastanza ritmo in questo file per salvare la misura.';
   }
   if (state.phase === 'listening') {
