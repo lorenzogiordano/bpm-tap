@@ -6,7 +6,9 @@
 // echoCancellation: false spegne l'elaborazione "da telefonata" di WebKit
 // (cancellazione dell'eco e controllo automatico del volume).
 
-const MAX_SECONDS = 120;
+// Fino a 5 minuti: BPM e tonalità si stabilizzano prima, ma per la struttura il ritornello
+// deve tornare almeno una volta (di solito dopo 60–90 s).
+const MAX_SECONDS = 300;
 
 export class Listener {
   constructor({ onUpdate, onEnd }) {

@@ -14,14 +14,21 @@ import { tempoCandidates, chooseTempo } from './tempo-choice.js';
 import { SKey, SKEY_RATE, DeepAverage } from './skey.js';
 import { chromaBlocks, skeyBlocks, standardize, scoreKeys, softmax } from './key-features.js';
 import { beatChroma, chordScores, transitionMatrix, decode, chordShares, keyBonus } from './chords.js';
+import { songStructure, beatLoudness } from './structure.js';
 
 const RATE = SKEY_RATE;             // 22050 Hz per tutte le analisi
 const SKEY_WINDOW = 30;             // secondi di audio dati a S-KEY
 const KEY_EVERY = 8;                // ogni quanti secondi aggiornare la tonalità
 const CALIBRATION_SECONDS = 3;
-const WAIT_LIMIT = 6;
+const WAIT_LIMIT = 6;               // se la musica non "parte" entro 6 s, si ascolta comunque
 const CHORD_HOP = 2048;             // 93 ms: cromagramma per gli accordi, più fitto di quello della tonalità
-const CHORD_MIN_SECONDS = 10;               // se la musica non "parte" entro 6 s, si ascolta comunque
+const CHORD_MIN_SECONDS = 10;
+// Struttura dal microfono solo con un ascolto lungo e pulito: almeno 60 s (il ritornello di
+// solito torna dopo 60–90 s), tempo stabile, tonalità almeno "probabile" e, se il silenzio
+// iniziale è stato misurato, musica almeno 15 dB sopra il rumore della stanza.
+const STRUCTURE_MIN_SECONDS = 60;
+const STRUCTURE_MIN_SNR = 15;
+const STRUCTURE_MIN_KEY = 0.5;
 // Indizi che richiedono il cromagramma (se il modello non li usa, il cromagramma non si calcola).
 const CHROMA_BLOCKS = new Set(['treble', 'bass', 'active', 'majtriad', 'mintriad', 'gbass']);
 const needsChroma = () => Boolean(keyModel && keyModel.blocks.some((b) => CHROMA_BLOCKS.has(b)));
@@ -31,21 +38,28 @@ let skey = null;
 let keyModel = null;
 let chordModel = null;
 let chordTransitions = null;
+let structureModels = null;
 
 async function loadAssets() {
-  if (skey && keyModel && chordModel) return;
-  const [graph, model, chords] = await Promise.all([
-    fetch(new URL('./skey-graph.json', import.meta.url)).then((r) => r.json()),
-    fetch(new URL('./key-model.json', import.meta.url)).then((r) => r.json()),
-    fetch(new URL('./chord-model.json', import.meta.url)).then((r) => r.json()),
+  if (skey && keyModel && chordModel && structureModels) return;
+  const json = (name) => fetch(new URL(name, import.meta.url)).then((r) => r.json());
+  const [graph, model, chords, structure, progressions] = await Promise.all([
+    json('./skey-graph.json'),
+    json('./key-model.json'),
+    json('./chord-model.json'),
+    json('./structure-model.json'),
+    json('./progression-model.json'),
   ]);
   skey = new SKey(graph);
   keyModel = model;
   chordModel = chords;
   chordTransitions = transitionMatrix(chords.transitions);
+  structureModels = { structure, progressions };
 }
 
-function start({ sampleRate, calibrate }) {
+// beatSeconds: quanta storia usare per i battiti. Nel file tutto il brano; dal microfono tutto
+// l'ascolto (al massimo 5 minuti, vedi listen.js): la struttura ha bisogno dei battiti dall'inizio.
+function start({ sampleRate, calibrate, beatSeconds = 300 }) {
   state = {
     phase: calibrate ? 'calibrating' : 'listening',
     resampler: new Resampler(sampleRate, RATE),
@@ -57,13 +71,15 @@ function start({ sampleRate, calibrate }) {
     musicSum: 0,        // potenza della musica durante l'ascolto
     musicCount: 0,
     loud: 0,
-    rhythm: new RhythmAnalyzer({ sampleRate: RATE, beatSeconds: 180 }),
+    rhythm: new RhythmAnalyzer({ sampleRate: RATE, beatSeconds }),
     chroma: new ChromaAnalyzer({ sampleRate: RATE, method: 'nnls' }),
     chordChroma: new ChromaAnalyzer({ sampleRate: RATE, method: 'nnls', hop: CHORD_HOP }),
     chordFrames: [],    // cromagramma NNLS di ogni frame (calcolato una volta)
     chordTuning: null,
     bpm: null,
     chords: null,
+    chordBeats: null,   // cromagramma per battito, probabilità degli accordi e volume (per la struttura)
+    structure: null,
     recent: new Float32Array(SKEY_WINDOW * RATE), // ultimi 30 s di audio (buffer circolare)
     recentLength: 0,
     recentPos: 0,
@@ -181,7 +197,7 @@ async function analyzeFile(samples) {
   const progress = (fraction, stage) => self.postMessage({ type: 'progress', fraction, stage });
   progress(0, 'load');
   await loadAssets();
-  start({ sampleRate: RATE, calibrate: false });
+  start({ sampleRate: RATE, calibrate: false, beatSeconds: 1e6 });
   const step = 5 * RATE;
   for (let i = 0; i < samples.length; i += step) {
     analyze(samples.subarray(i, i + step));
@@ -203,8 +219,11 @@ async function analyzeFile(samples) {
   state.key = run ? keyFrom(run.p, avg.deep) : null;
   progress(0.85, 'chords');
   const chords = chordUpdate();
+  progress(0.95, 'structure');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const structure = structureUpdate();
   progress(1, 'done');
-  self.postMessage({ type: 'result', seconds: state.seconds, tempo, key: state.key, chords });
+  self.postMessage({ type: 'result', seconds: state.seconds, tempo, key: state.key, chords, structure });
 }
 
 // Accordi: cromagramma per battito, punteggi con la tonalità come preferenza, HMM, e quota
@@ -227,7 +246,30 @@ function chordUpdate() {
   const scores = chordScores(beats, chordModel.emission, bonus).map((row) => row.map((x) => x / t));
   const { posteriors } = decode(scores, chordTransitions);
   state.chords = { shares: chordShares(beats, posteriors).slice(0, 8), seconds: state.seconds };
+  const loudness = beatLoudness(chordChroma.frames.map((r) => r.rms), times, beats);
+  state.chordBeats = { beats, posteriors, loudness };
   return state.chords;
+}
+
+// Struttura (sezioni e giri) sugli accordi appena calcolati. Nel file sempre; dal microfono
+// solo se l'ascolto è lungo e pulito (vedi STRUCTURE_*), altrimenti non si mostra nulla.
+function structureUpdate(fromMic = false) {
+  if (!structureModels || !state.chordBeats) return null;
+  if (fromMic) {
+    const noise = snr();
+    const stable = state.history.length >= 5 && state.history.every((v) => Math.abs(v / state.history[state.history.length - 1] - 1) < 0.01);
+    const clean = noise === null || noise >= STRUCTURE_MIN_SNR;
+    if (state.seconds < STRUCTURE_MIN_SECONDS || !stable || !clean || !(state.key?.probability >= STRUCTURE_MIN_KEY)) return state.structure;
+  }
+  const { beats, posteriors, loudness } = state.chordBeats;
+  try {
+    state.structure = songStructure({ beats, posteriors, loudness, key: state.key }, structureModels);
+  } catch (error) {
+    // Un errore nella struttura non deve togliere BPM, tonalità e accordi.
+    console.error(error);
+    state.structure = null;
+  }
+  return state.structure;
 }
 
 // Quanto la musica supera il rumore della stanza (dB), se il silenzio è stato misurato.
@@ -333,6 +375,7 @@ self.onmessage = async ({ data }) => {
     state.lastKeyAt = state.seconds;
     key = keyUpdate();
     chordUpdate();
+    structureUpdate(true);
   }
-  post({ tempo, key, chords: state.chords });
+  post({ tempo, key, chords: state.chords, structure: state.structure });
 };
