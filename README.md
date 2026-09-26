@@ -2,7 +2,7 @@
 
 Web app installabile (PWA) per misurare i BPM di una canzone battendo **sul retro dell'iPhone**, letto dall'accelerometro, oppure sullo schermo. Più tap fai, più il valore è preciso; quando smetti, la misura si salva da sola.
 
-La modalità **Ascolta** ricava BPM, **tonalità** e **accordi** direttamente dalla canzone, dal microfono. Sui **MacBook** si può bussare sulla scocca, letta dal sensore di movimento interno. Ogni BPM trovato si può **ascoltare** con un metronomo.
+La modalità **Ascolta** ricava BPM, **tonalità** e **accordi** direttamente dalla canzone, dal microfono o da un file audio. Da un file (o da un ascolto lungo e pulito) trova anche la **struttura**: le sezioni che tornano (A, B, C…) e il **giro di accordi** di ciascuna, con i gradi. Sui **MacBook** si può bussare sulla scocca, letta dal sensore di movimento interno. Ogni BPM trovato si può **ascoltare** con un metronomo.
 
 Nessuna dipendenza, nessun passaggio di build: sono file statici.
 
@@ -31,6 +31,25 @@ Se usi **Tocco posteriore** (Impostazioni › Accessibilità › Tocco), disatti
    - **incerta**: con l'alternativa più vicina.
 5. Dopo circa 20 s compaiono gli **accordi** principali della canzone: solo quelli che occupano almeno il 10% del tempo ascoltato. Toccane uno per sentirlo (a ascolto fermo).
 6. Tocca **Ferma e salva**. Poi puoi **verificare a orecchio**: l'app suona la cadenza I–IV–V–I (i–iv–V–i in minore) della tonalità trovata e dell'alternativa, e tu tieni quella che "torna a casa" con la canzone. Tra le prime due la tonalità giusta c'è in circa 3 casi su 4.
+
+L'ascolto dura al massimo 5 minuti. Se vai oltre il minuto con il tempo stabile, una tonalità almeno "probabile" e poco rumore nella stanza, compare anche la **struttura** (qui sotto), che si aggiorna mentre ascolti.
+
+### Struttura e giri
+
+Il modo migliore è un **file audio**: tocca **oppure analizza un file audio** (sul computer puoi trascinarlo sulla pagina). MP3, M4A, WAV e gli altri formati che il browser sa leggere, fino a 15 minuti; il file resta sul dispositivo. BPM, tonalità, accordi e struttura arrivano in pochi secondi.
+
+- La **linea del tempo** mostra le sezioni una dopo l'altra, larghe quanto durano. **Lettere uguali, stessa musica**: se il ritornello torna tre volte, trovi tre blocchi con la stessa lettera. **A′** è una variante di A: le somiglia, ma il suo giro è diverso.
+- Per ogni lettera c'è il suo **giro**: gli accordi in ordine, ciascuno con il grado nella tonalità (I, IV, V, vi…) e la durata quando non è una battuta ("½ batt.", "2 batt."). Sotto: "Giro di 4 battute, ×2 ogni volta" se gli accordi si ripetono uguali, altrimenti "Nessun giro fisso" e la sezione intera. Un accordo incerto ha il bordo tratteggiato e il punto di domanda.
+- Se il giro è uno di quelli famosi (giro pop I–V–vi–IV, giro di Do I–vi–IV–V, cadenza andalusa…) ne compare il nome, solo quando il giro è netto.
+- **▶**, o un tocco su un blocco della linea del tempo, suona il giro al tempo della canzone.
+- Se nel brano gira sempre lo stesso giro, lo dice, e gli accordi principali in alto seguono il suo ordine.
+- Nello storico ogni misura con la struttura ha una linea del tempo sottile; "Struttura e giri" apre i giri.
+
+Cosa l'app **non** fa, di proposito:
+
+- **Non dà i nomi** strofa, ritornello, bridge. Il modello c'è ed è stato misurato, ma con le sezioni trovate dall'audio il ritornello nominato sarebbe giusto circa una volta su due (dettagli sotto).
+- **Non corregge i giri** verso quelli più comuni, né li riordina. Nelle prove il giro sentito era giusto quasi sempre quando differiva da un giro famoso; "correggerlo" lo avrebbe rovinato (dettagli sotto).
+- **Non mostra la struttura quando non è sicura**: sotto i 60 s, se non c'è una sezione che torna (o un giro fisso), o se le ripetizioni della stessa lettera si somigliano poco. Dal microfono serve anche un ascolto pulito.
 
 ### Sul computer
 
@@ -182,6 +201,73 @@ La perdita dal microfono viene soprattutto dall'eco della stanza e dalle casse p
 
 **Limiti.** Le prove usano estratti da 30 s e una stanza simulata, non registrazioni con un iPhone vero. Brani con cambi di tonalità, modali o senza un centro tonale chiaro non hanno una risposta giusta sola. Per questo c'è la verifica a orecchio.
 
+### Struttura e giri ([audio/structure.js](audio/structure.js), [audio/progressions.js](audio/progressions.js))
+
+Tutto lavora sulle battute, con elaborazione del segnale classica: non esiste un modello piccolo e con licenza libera per la struttura che giri su un telefono. Una canzone di 5 minuti richiede meno di 0,1 s su un Mac.
+
+1. **Battute.** Un modello di Markov segue la posizione di ogni battito nella battuta (1, 2, 3, 4), osservando quanto cambia l'accordo: su Billboard l'accordo cambia sul primo battito nel 41% dei casi, sugli altri nel 14–27%. La posizione può saltare (una battuta di 2/4, un battito perso). I battiti prima del primo "uno" diventano una battuta incompleta: il tracciatore perde spesso il primo battito del brano e senza questa correzione tutte le sezioni scivolavano di una battuta.
+2. **Indizi per battuta.** Cromagramma di basso e acuti e probabilità degli accordi per mezza battuta, volume e timbro. Il timbro sono i coefficienti cepstrali (come gli MFCC) delle 40 bande mel che il tracciatore del tempo calcola già: cambiano quando cambiano gli strumenti.
+3. **Somiglianza** tra tutte le coppie di battute (coseno sugli indizi centrati), lisciata lungo le diagonali.
+4. **Confini.** Novità di Foote (dove finisce un blocco di battute simili) più novità delle ripetizioni (Serrà et al. 2014: dove comincia un passaggio che torna altrove). Poi la programmazione dinamica sceglie i confini con una preferenza per le lunghezze tipiche delle sezioni, contate su Billboard (8 battute, poi 16, 4, 12…). Infine ogni confine si sposta di una battuta se lì il contrasto immediato è molto più forte.
+5. **Lettere.** Le sezioni che si somigliano lungo la diagonale (stessa successione, anche spostata di una battuta) prendono la stessa lettera. Le ripetizioni che poi non vanno d'accordo con il giro della lettera diventano una variante (A′) con il suo giro.
+6. **Giro.** Per ogni periodo di 1, 2, 3, 4, 6 o 8 battute: con che probabilità due mezze battute a quella distanza hanno lo stesso accordo. Sopra 0,75 è un giro fisso, e vince il periodo più corto vicino al migliore. Le ripetizioni si allineano (i confini sbagliano spesso di una battuta) e si mediano, così il giro è il riassunto di tutte.
+
+**Dati per le prove.** Canzoni pop vere con audio libero e struttura annotata non ce ne sono. Quindi:
+
+- [McGill Billboard](https://ddmal.ca/research/The_McGill_Billboard_Project_(Chord_Analysis_Dataset)/) (Burgoyne et al. 2011, CC0): 739 canzoni delle classifiche 1958–1991 con accordi, sezioni e funzioni annotati. Niente audio: il cromagramma NNLS di Chordino (lo stesso tipo del nostro) passa per il modello degli accordi dell'app (72% dei battiti giusti, come Chordino); battiti, volume e timbro sono quelli di Echo Nest.
+- [RS 200](http://rockcorpus.midside.com/) di de Clercq & Temperley (CC BY 4.0), 200 canzoni rock analizzate a mano: insieme a Billboard, per contare i passaggi tra accordi (76 000 cambi, per il confronto con i giri noti).
+- AAM (vedi accordi): il percorso completo dall'audio, pulito e dal microfono in una stanza simulata. Le sezioni sono i segni A, B, C delle canzoni, dove cambiano tonalità e strumenti: più facili delle canzoni vere.
+
+Parametri scelti su 3 gruppi di Billboard su 5 (sviluppo), provati sugli altri 2 (282 brani mai visti). Confini giusti entro 0,5 e 3 s (HR.5F, HR3F, senza inizio e fine del brano, come mir_eval) e lettere giuste (F a coppie: quante coppie di istanti hanno la stessa lettera sia nell'annotazione che nella risposta):
+
+| | HR.5F | HR3F | F a coppie |
+|---|---|---|---|
+| Billboard, prova | 32% | 49% | 61% |
+| Billboard, prova, brani con ripetizioni abbastanza simili da mostrarla (73%) | 35% | 52% | 63% |
+| Billboard, prova, senza timbro | 30% | 47% | 61% |
+| AAM, audio pulito (struttura mostrata nel 99% dei brani) | 53% | 63% | 77% |
+| AAM, dal microfono, stanza simulata (98%) | 50% | 63% | 76% |
+| AAM pulito, senza timbro | 41% | 56% | 73% |
+
+Per confronto, una sola lettera per tutto il brano dà già circa il 55% di F a coppie su Billboard. I buoni metodi non supervisionati della letteratura dichiarano HR3F di 0,6–0,7 e HR.5F di 0,3–0,45 su altre raccolte; due annotatori umani concordano intorno a 0,9. Qui i confini entro 3 s sono giusti circa una volta su due: la linea del tempo è un'indicazione, non un'analisi da manuale. I primi battiti trovati cadono su un inizio di battuta annotato nel 54% dei casi (una fase unica per tutto il brano: 48%). Il tetto è intorno al 76%, perché circa un inizio di battuta annotato su cinque cade a metà tra due battiti di Echo Nest. Il 3/4 non si usa: riconosciuto così era giusto 4 volte su 10.
+
+**Giri** (Billboard in validazione incrociata a 5 gruppi; AAM dall'audio):
+
+| | Billboard, sezioni annotate | Billboard, sezioni trovate | AAM pulito | AAM microfono |
+|---|---|---|---|---|
+| sezioni con un giro fisso (≥ 90% delle mezze battute uguali) | 33% | 26% | 21% | 21% |
+| "giro fisso" detto dall'app: giusto | 66% | 58% | 56% | 55% |
+| giri fissi trovati | 63% | 54% | 43% | 35% |
+| stesso periodo, quando c'è in entrambi | 84% | 82% | 81% | 81% |
+| accordi giusti per battito: HMM | 72% | 72% | 93% | 81% |
+| accordi giusti per battito: giro della sezione | 71% | 72% | 89% | 79% |
+
+Il giro di una sezione è quindi un riassunto fedele: descrive ogni ripetizione quasi come gli accordi battito per battito (da 0 a 4 punti in meno). Non la migliora, però: Mauch et al. (ISMIR 2009) misurano +2,5 punti mediando il cromagramma delle parti ripetute, qui mediare le probabilità non aggiunge nulla. Mediare le ripetizioni così come escono dai confini costava 13 punti su AAM, perché i confini sbagliano spesso di una battuta: per questo si allineano, e quelle diverse diventano varianti.
+
+**Giri noti** ([lab/progressions-dictionary.mjs](lab/progressions-dictionary.mjs), sezioni annotate di Billboard). Il dizionario ha 25 giri con un nome (teoria musicale, non dati). I passaggi tra accordi sono contati su Billboard e RS 200 senza i brani di prova.
+
+- Quando il giro trovato è esattamente un giro noto, netto e con accordi sicuri, il nome è giusto 43 volte su 46 (93%). Se si guardano anche le durate di ogni accordo, 7 su 10.
+- Quando un giro noto differisce da quello trovato in **una sola posizione**: in quella posizione l'accordo annotato è quello trovato 315 volte su 390, quello del giro noto 17. La regola stretta proposta dalla ricerca (accordo trovato incerto, sotto 0,6; quello del giro noto secondo, con almeno 0,25; giro netto; giro noto vincente nel confronto con i passaggi) non scatta mai.
+- Quando un giro noto ha **gli stessi accordi in un altro ordine**: l'ordine annotato è quello trovato 134 volte su 174, quello del giro noto mai.
+
+Per questo l'app non corregge né riordina mai i giri. Se la regola stretta scattasse, proporrebbe il giro noto come "forse…?", da ascoltare con un tocco, lasciando il giro trovato com'è.
+
+**Nomi delle sezioni** ([lab/structure-names.mjs](lab/structure-names.mjs)). Un modello dell'ordine delle sezioni (intro, strofa, pre-ritornello, ritornello, bridge, strumentale, finale), imparato su Billboard, più indizi per sezione: quante volte torna, volume, lunghezza, posizione. Sono le regole di RefraiD (Goto 2006): il ritornello torna ed è più forte, la strofa lo precede. Validazione incrociata a 5 gruppi:
+
+| | ruolo giusto (tempo) | ritornello: precisione | ritornello: trovato |
+|---|---|---|---|
+| sezioni e lettere annotate | 59% | 56% | 59% |
+| … solo quando il ritornello vince con margine (29% dei brani) | 72% | 78% | 80% |
+| sezioni trovate dall'app | 43% | 42% | 31% |
+| … con margine (1% dei brani) | 52% | 57% | 75% |
+| regola semplice: la lettera più ripetuta è il ritornello | 34% | 35% | 48% |
+
+Paulus (2010) riporta il 62–83% di ruoli giusti con sezioni annotate, in linea con il 59–72% qui. Con le sezioni trovate dall'audio, invece, il ritornello è giusto meno di una volta su due. Neanche un classificatore della lettera "ritornello" ha fatto meglio (41%), né restringersi ai brani con la struttura più netta. Per questo i nomi restano spenti (`SHOW.names` in [audio/structure.js](audio/structure.js)).
+
+**Dal microfono** la struttura si calcola ogni 8 s, solo dopo 60 s di ascolto, con il tempo stabile, la tonalità almeno "probabile" e, se il silenzio iniziale è stato misurato, la musica almeno 15 dB sopra il rumore. Queste soglie sono prudenti, non tarate: su AAM la stanza simulata (rumore 10–20 dB sotto la musica) toglie poco ai confini e alle lettere. Toglie invece circa 10 punti agli accordi, per l'eco e le casse piccole.
+
+**Limiti.** Nessuna prova su canzoni pop vere registrate dal microfono di un telefono. Billboard ha battiti e timbro di Echo Nest, non quelli dell'app. AAM è sintetico e facile. La tonalità è una per tutto il brano, quindi dopo un cambio di tonalità i gradi restano riferiti a quella iniziale. Solo 4/4.
+
 ### Dal sensore del MacBook ai colpi ([knock.js](knock.js), [mac/bpm-knock.py](mac/bpm-knock.py))
 
 - **Il sensore.** È un accelerometro e giroscopio MEMS (ritenuto un Bosch BMI286) gestito dal Sensor Processing Unit di Apple ed esposto come dispositivo HID `AppleSPUHIDDevice` (pagina 0xFF00, uso 3). Lo hanno reso noto [olvvier/apple-silicon-accelerometer](https://github.com/olvvier/apple-silicon-accelerometer) (licenza MIT) e [taigrr/spank](https://github.com/taigrr/spank), il progetto "schiaffeggia il MacBook" da cui è nata l'app [SlapMac](https://slapmac.com/). Si accende impostando alcune proprietà del driver (`SensorPropertyReportingState`, `SensorPropertyPowerState`, `ReportInterval`), poi manda resoconti di 22 byte: x, y, z interi a 32 bit dal byte 6, in 1/65536 g.
@@ -212,7 +298,7 @@ La perdita dal microfono viene soprattutto dall'eco della stanza e dalle casse p
 npm test
 ```
 
-Ci sono 53 test (Node, nessuna dipendenza):
+Ci sono 69 test (Node, nessuna dipendenza):
 
 - precisione che cresce come n^-1,5;
 - regressione più precisa della media degli intervalli;
@@ -226,6 +312,8 @@ Ci sono 53 test (Node, nessuna dipendenza):
 - sessione completa a 60 BPM con tocchi leggeri e uno scossone in mezzo;
 - colpi sul MacBook: colpi a 110 BPM tutti contati con istanti regolari, colpi fortissimi senza doppi, battitura e spostamenti ignorati, sensibilità;
 - accordi: media per battito, preferenza di tonalità, HMM, quote, e catena completa su un giro Do–Sol–Lam–Fa sintetico;
+- giri: gradi (anche in minore), giri noti con rotazioni e relativa, periodo e ordine del giro, due accordi per battuta, ripetizioni sfasate allineate, sezione senza giro, confronto con i giri noti (si propone solo con una posizione diversa, mai si sostituisce);
+- struttura: primi battiti con l'anacrusi, volume e timbro per battito, confini e lettere su A A B B A A, giro per lettera, niente struttura su un brano breve, e catena completa dall'audio su una canzone sintetica strofa–ritornello;
 - ascolto: FFT, framing e ricampionamento; BPM dai battiti con salti di fase e copertura del margine; interprete ONNX contro il calcolo diretto; indizi della tonalità che si spostano con la trasposizione; media dei profili di S-KEY su finestre sovrapposte; catena completa (S-KEY + modello) su cadenze in Do maggiore, La minore e Mi♭ maggiore.
 
 Il banco di prova con i dataset, le stanze simulate e gli script che hanno prodotto i numeri qui sopra è in [lab/](lab/README.md).
@@ -239,9 +327,10 @@ Il banco di prova con i dataset, le stanze simulate e gli script che hanno prodo
 | [tempo.js](tempo.js) | stima dei BPM dai tap (pura, testabile) |
 | [detector.js](detector.js) | rilevamento dei tap dall'accelerometro del telefono (puro, testabile) |
 | [knock.js](knock.js), [mac-motion.js](mac-motion.js), [mac/bpm-knock.py](mac/bpm-knock.py) | colpi sul MacBook: rilevatore, collegamento, programma del sensore |
-| [sound.js](sound.js) | metronomo, cadenze e accordi da ascoltare |
+| [sound.js](sound.js) | metronomo, cadenze, accordi e giri da ascoltare |
+| [structure-view.js](structure-view.js), [chord-names.js](chord-names.js) | pannello della struttura e dei giri, forma compatta per lo storico; nomi italiani degli accordi |
 | [listen.js](listen.js) | microfono, AudioWorklet e Worker dell'ascolto |
-| [audio/](audio/) | analisi dell'audio: tempo, S-KEY, interprete ONNX, tonalità e accordi |
+| [audio/](audio/) | analisi dell'audio: tempo, S-KEY, interprete ONNX, tonalità, accordi, struttura e giri |
 | [sw.js](sw.js), [manifest.webmanifest](manifest.webmanifest), [icons/](icons/) | PWA |
 | [test/](test/) | test |
 | [lab/](lab/README.md) | banco di prova (non serve all'app) |
